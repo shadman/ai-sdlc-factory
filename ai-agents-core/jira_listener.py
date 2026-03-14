@@ -63,6 +63,6 @@ def trigger_analyst(issue_key, summary):
     logger.info(f"Analysis saved for {issue_key}. Awaiting 'Proceed' comment.")
 
 def trigger_developer(issue_key, plan):
-    factory = AIFactory(issue_key, "Execute approved plan")
-    factory.run_production(plan)
-    redis_client.hset(f"task:{issue_key}", "state", "coding")
+    factory = AIFactory(issue_key, "Approved Plan")
+    # UPDATED METHOD NAME HERE
+    factory.run_full_production_chain(issue_key, plan)

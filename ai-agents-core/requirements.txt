@@ -1,0 +1,19 @@
+# Web & API
+fastapi
+uvicorn
+python-multipart
+
+# Agent Orchestration
+crewai[tools]
+langchain
+pydantic>=2.0.0
+
+# Infrastructure & Tracing
+redis
+arize-phoenix
+opentelemetry-api
+opentelemetry-sdk
+
+# Tools
+python-dotenv
+requests

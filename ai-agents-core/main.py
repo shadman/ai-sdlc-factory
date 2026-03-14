@@ -1,36 +1,36 @@
 import os
 from crewai import Agent, Task, Crew, Process
 from langchain_community.llms import Ollama
-from crewai_tools import FileReadTool, JiraTool
+from crewai_tools import FileReadTool, JiraTool, ShellTool
 
-# 1. Configuration: Connect to local Ollama
-# DeepSeek-Coder-V2 is excellent for reasoning and code
-local_llm = Ollama(model="deepseek-coder-v2:lite", base_url="http://ollama:11434")
+# 1. Configuration: Optimized for 16GB RAM
+local_llm = Ollama(
+    model="deepseek-coder-v2:lite", 
+    base_url="http://ollama:11434",
+    timeout=300
+)
 
 # 2. Tools initialization
-# FileReadTool allows agents to read your AGENTS.md files
 file_tool = FileReadTool()
-# Note: JiraTool requires JIRA_DOMAIN, JIRA_USERNAME, and JIRA_API_TOKEN in .env
 jira_tool = JiraTool()
+shell_tool = ShellTool()
 
 # --- AGENT DEFINITIONS ---
 
 analyst_agent = Agent(
     role='Lead SDLC Analyst',
     goal='Analyze Jira tickets and codebases to provide a confidence score and technical plan.',
-    backstory="""You are an expert at system architecture. You check repo-specific AGENTS.md 
-    files to ensure all constraints are met before any coding starts.""",
+    backstory="""Expert architect. You read repo-specific AGENTS.md files to 
+    ensure constraints are met. You calculate the 'Confidence Score' for the human.""",
     tools=[file_tool, jira_tool],
     llm=local_llm,
-    verbose=True,
-    allow_delegation=False
+    verbose=True
 )
 
 backend_agent = Agent(
     role='Python Backend Developer',
-    goal='Implement secure and scalable Python FastAPI logic.',
-    backstory="""You follow PEP8 and the rules in python-backend/AGENTS.md. 
-    You focus on Postgres migrations and API performance.""",
+    goal='Implement FastAPI logic and Postgres schema changes.',
+    backstory="Follows /backend/AGENTS.md. Experts in Pydantic and SQLAlchemy.",
     tools=[file_tool],
     llm=local_llm,
     verbose=True
@@ -38,10 +38,44 @@ backend_agent = Agent(
 
 frontend_agent = Agent(
     role='Angular Frontend Developer',
-    goal='Create high-quality Angular components.',
-    backstory="""You follow Angular 17+ standards and the rules in angular-frontend/AGENTS.md. 
-    You focus on Standalone components and Tailwind CSS.""",
+    goal='Create Angular standalone components and services.',
+    backstory="Follows /frontend/AGENTS.md. Expert in Signals, RxJS, and Tailwind.",
     tools=[file_tool],
+    llm=local_llm,
+    verbose=True
+)
+
+integrator_agent = Agent(
+    role='System Integration Specialist',
+    goal='Ensure the API contract between Backend and Frontend is perfect.',
+    backstory="""You follow the Integration Protocol in ai-agents-core/AGENTS.md. 
+    You ensure JSON keys match between Python and TypeScript.""",
+    llm=local_llm,
+    verbose=True
+)
+
+security_agent = Agent(
+    role='SecOps Specialist',
+    goal='Scan for vulnerabilities using Bandit and NPM Audit.',
+    backstory="Audit the code in /app/repos. You are the safety gate.",
+    tools=[shell_tool, file_tool],
+    llm=local_llm,
+    verbose=True
+)
+
+doc_agent = Agent(
+    role='Documentation Architect',
+    goal='Update README.md and AGENTS.md files.',
+    backstory="Ensure the Living Documentation is updated in both repos.",
+    tools=[file_tool, shell_tool],
+    llm=local_llm,
+    verbose=True
+)
+
+reviewer_agent = Agent(
+    role='Senior Staff Engineer',
+    goal='Final peer review and Reflection gate.',
+    backstory="The final human-like quality check before PR creation.",
     llm=local_llm,
     verbose=True
 )
@@ -50,35 +84,19 @@ frontend_agent = Agent(
 
 def create_analysis_task(issue_key, summary):
     return Task(
-        description=f"""Analyze Jira ticket {issue_key}: {summary}.
-        1. Read /app/repos/backend/AGENTS.md and /app/repos/frontend/AGENTS.md.
-        2. Scan the current codebase for these repositories.
-        3. Calculate a Confidence Score (0-100%).
-        4. Draft a Technical Plan.
-        
-        Output format for Jira:
-        Confidence Score: [X]%
-        Technical Plan: [Brief steps]
-        Risk Level: [Low/Med/High]
-        'Type Proceed to start coding.'
-        """,
-        expected_output="A structured report with a confidence score and plan.",
-        agent=analyst_agent,
-        output_file=f"logs/analysis_{issue_key}.md"
+        description=f"Analyze {issue_key}: {summary}. Read AGENTS.md in all repos and provide Score & Plan.",
+        expected_output="A Technical Plan with a Confidence Score.",
+        agent=analyst_agent
     )
 
 def create_development_task(issue_key, plan):
     return Task(
-        description=f"""Based on the plan: {plan}, implement the changes.
-        - Backend Agent: Update Python code following /backend/AGENTS.md.
-        - Frontend Agent: Update Angular code following /frontend/AGENTS.md.
-        - Integration: Ensure API contracts match between repos.
-        """,
-        expected_output="Code implemented in separate feature branches with passing logic.",
-        agent=backend_agent # CrewAI allows multiple agents to be assigned via 'context' or separate tasks
+        description=f"Implement {issue_key} according to plan: {plan}. Follow repo-specific AGENTS.md.",
+        expected_output="Code implemented in both repo volumes.",
+        agent=backend_agent
     )
 
-# --- ORCHESTRATION ---
+# --- THE FACTORY CLASS ---
 
 class AIFactory:
     def __init__(self, issue_key, summary):
@@ -86,28 +104,48 @@ class AIFactory:
         self.summary = summary
 
     def run_analysis(self):
-        """Phase 1: Analysis & Scoring"""
-        analysis_task = create_analysis_task(self.issue_key, self.summary)
-        
+        """Phase 1: Analysis & Scoring (Triggered by 'In Progress')"""
+        task = create_analysis_task(self.issue_key, self.summary)
         crew = Crew(
             agents=[analyst_agent],
-            tasks=[analysis_task],
+            tasks=[task],
             process=Process.sequential,
             verbose=True
         )
-        result = crew.kickoff()
-        
-        # Post the result to Jira (Tool usage)
-        # jira_tool.post_comment(issue=self.issue_key, body=result)
-        return result
-
-    def run_production(self, approved_plan):
-        """Phase 2: Coding (Triggered by 'Proceed' comment)"""
-        dev_task = create_development_task(self.issue_key, approved_plan)
-        
-        crew = Crew(
-            agents=[backend_agent, frontend_agent],
-            tasks=[dev_task],
-            process=Process.sequential # Keeps RAM usage low
-        )
         return crew.kickoff()
+
+    def run_full_production_chain(self, issue_key, plan):
+        """Phase 2: Full Implementation (Triggered by 'Proceed')"""
+        
+        dev_task = create_development_task(issue_key, plan)
+        
+        int_task = Task(
+            description="Verify API contract between Python and Angular. Ensure models match perfectly.",
+            expected_output="Contract verification report.",
+            agent=integrator_agent
+        )
+        
+        sec_task = Task(
+            description="Run shell tools (Bandit/NPM Audit) to scan for vulnerabilities.",
+            expected_output="Security scan report. Block if High vulnerabilities found.",
+            agent=security_agent
+        )
+        
+        doc_task = Task(
+            description="Update repo-specific AGENTS.md and README.md with new changes.",
+            expected_output="Updated documentation in repos.",
+            agent=doc_agent
+        )
+        
+        rev_task = Task(
+            description="Final Peer Review and Reflection Gate.",
+            expected_output="Approval for PR.",
+            agent=reviewer_agent
+        )
+
+        production_crew = Crew(
+            agents=[backend_agent, frontend_agent, integrator_agent, security_agent, doc_agent, reviewer_agent],
+            tasks=[dev_task, int_task, sec_task, doc_task, rev_task],
+            process=Process.sequential
+        )
+        return production_crew.kickoff()
