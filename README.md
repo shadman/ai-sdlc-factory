@@ -46,7 +46,7 @@ The factory operates as a **State Machine** orchestrated by Redis and CrewAI.
 │   └── requirements.txt   # Core Dependencies
 ├── docker-compose.yml     # Infrastructure (Profiles: 'default', 'ai')
 └── README.md              # This file
-
+```
 
 
 ## 🚀 4. Setup Instructions (16GB RAM Optimized)
