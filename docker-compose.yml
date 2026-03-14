@@ -1,0 +1,76 @@
+services:
+  # --- STAGE 1: E-COMMERCE CORE (Always On) ---
+  db:
+    image: postgres:15-alpine
+    container_name: eco-db
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: ecommerce
+    ports: ["5432:5432"]
+    deploy:
+      resources:
+        limits: { memory: 512M }
+
+  backend-api:
+    build: ./backend
+    container_name: eco-backend
+    depends_on: [db]
+    environment:
+      DATABASE_URL: postgresql://admin:admin@db:5432/ecommerce
+    deploy:
+      resources:
+        limits: { memory: 1G }
+
+  frontend-ui:
+    build: ./frontend
+    container_name: eco-frontend
+    ports: ["4200:4200"]
+    deploy:
+      resources:
+        limits: { memory: 512M }
+
+  # --- STAGE 2: AI FACTORY (On-Demand / Memory Intensive) ---
+  # Use: docker-compose --profile ai up -d
+  ollama:
+    image: ollama/ollama
+    container_name: ai-brain
+    profiles: ["ai"]
+    volumes: ["./data/ollama:/root/.ollama"]
+    ports: ["11434:11434"]
+    deploy:
+      resources:
+        limits: { memory: 6G }
+
+  redis:
+    image: redis:alpine
+    container_name: ai-state
+    profiles: ["ai"]
+    deploy:
+      resources:
+        limits: { memory: 256M }
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: ai-observability
+    profiles: ["ai"]
+    ports:
+      - "6006:6006" # UI
+      - "4317:4317" # Traces
+    deploy:
+      resources:
+        limits: { memory: 1G }
+
+  ai-squad:
+    build: ./ai-agents-core
+    container_name: ai-squad
+    profiles: ["ai"]
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - REDIS_URL=redis://redis:6379
+      - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:4317
+    volumes:
+      - ./backend:/app/repos/backend
+      - ./frontend:/app/repos/frontend
+    depends_on: [ollama, redis, phoenix]
+
