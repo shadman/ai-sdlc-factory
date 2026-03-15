@@ -143,4 +143,5 @@ Ensure your Jira Webhooks are pointing to http://[YOUR-IP]:8000/webhook/jira.
 Would you like me to generate a **GitHub Actions workflow** to automate the final deployment once the Reviewer Agent approves the PR?
 ```
 
-
+## Run: 
+docker-compose --profile ai up -d

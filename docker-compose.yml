@@ -3,6 +3,7 @@ services:
   db:
     image: postgres:15-alpine
     container_name: eco-db
+    networks: [ai-factory-net]
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: admin
@@ -15,6 +16,7 @@ services:
   backend-api:
     build: ./backend
     container_name: eco-backend
+    networks: [ai-factory-net]
     depends_on: [db]
     environment:
       DATABASE_URL: postgresql://admin:admin@db:5432/ecommerce
@@ -25,16 +27,17 @@ services:
   frontend-ui:
     build: ./frontend
     container_name: eco-frontend
+    networks: [ai-factory-net]
     ports: ["4200:4200"]
     deploy:
       resources:
         limits: { memory: 512M }
 
   # --- STAGE 2: AI FACTORY (On-Demand / Memory Intensive) ---
-  # Use: docker-compose --profile ai up -d
   ollama:
     image: ollama/ollama
     container_name: ai-brain
+    networks: [ai-factory-net]
     profiles: ["ai"]
     volumes: ["./data/ollama:/root/.ollama"]
     ports: ["11434:11434"]
@@ -45,6 +48,7 @@ services:
   redis:
     image: redis:alpine
     container_name: ai-state
+    networks: [ai-factory-net]
     profiles: ["ai"]
     deploy:
       resources:
@@ -53,24 +57,37 @@ services:
   phoenix:
     image: arizephoenix/phoenix:latest
     container_name: ai-observability
+    networks: [ai-factory-net]
     profiles: ["ai"]
-    ports:
-      - "6006:6006" # UI
-      - "4317:4317" # Traces
+    ports: ["6006:6006"]
     deploy:
       resources:
         limits: { memory: 1G }
 
   ai-squad:
-    build: ./ai-agents-core
+    build:
+      context: ./ai-agents-core
+      dockerfile: Dockerfile
     container_name: ai-squad
+    networks: [ai-factory-net]
     profiles: ["ai"]
+    ports: ["8000:8000"] # Needed for Jira Webhook listener
+    env_file: .env
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
       - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:4317
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GIT_USER_NAME=${GIT_USER_NAME}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL}
     volumes:
       - ./backend:/app/repos/backend
       - ./frontend:/app/repos/frontend
     depends_on: [ollama, redis, phoenix]
+    deploy:
+      resources:
+        limits: { memory: 2G }
 
+networks:
+  ai-factory-net:
+    driver: bridge

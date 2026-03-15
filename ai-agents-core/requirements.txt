@@ -4,8 +4,10 @@ uvicorn
 python-multipart
 
 # Agent Orchestration
+crewai
 crewai[tools]
 langchain
+langchain-community
 pydantic>=2.0.0
 
 # Infrastructure & Tracing
