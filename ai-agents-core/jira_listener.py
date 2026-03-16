@@ -1,4 +1,5 @@
 import os, json, logging
+import uuid 
 from fastapi import FastAPI, Request, BackgroundTasks
 from redis import Redis
 from main import AIFactory
@@ -24,10 +25,15 @@ async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
         issue = payload.get("issue", {})
         issue_key = issue.get("key") or f"INTERNAL-{uuid.uuid4().hex[:6].upper()}"
         repo_context = payload.get("repo", "backend")
-        
+        logs = payload.get("logs", "No logs provided.")
+
         logger.info(f"🛠️ CI/CD Auto-Repair triggered for {issue_key} in {repo_context}")
         redis_client.hset(f"task:{issue_key}", "state", "repairing")
-        background_tasks.add_task(trigger_production_with_repo, issue_key, "Auto-repair failure", repo_context)
+
+        # Prepend logs to the plan so the Agent sees them
+        repair_plan = f"CI Failure detected. Error Logs:\n{logs}"
+        background_tasks.add_task(trigger_production_with_repo, issue_key, repo_context, repair_plan)
+
         return {"status": "repairing", "issue_key": issue_key}
 
     # --- HANDLER FOR JIRA WEBHOOKS ---
@@ -41,6 +47,10 @@ async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
     summary = fields.get("summary", "")
     components = [c.get("name") for c in fields.get("components", [])]
 
+    repo_context = "backend"
+    if any(c.lower() == "frontend" for c in components):
+        repo_context = "frontend"
+
     # --- STATE 1: Analyzing (Triggered by 'In Progress') ---
     if status == "In Progress" and event_type == "jira:issue_updated":
         logger.info(f"🚀 Initializing Analysis for {issue_key}")
@@ -49,10 +59,11 @@ async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
         redis_client.hset(f"task:{issue_key}", mapping={
             "state": "analyzing", # <--- STATE: analyzing
             "components": json.dumps(components),
+            "repo_context": repo_context, 
             "summary": summary
         })
         
-        background_tasks.add_task(trigger_analyst, issue_key, summary)
+        background_tasks.add_task(trigger_analyst, issue_key, repo_context, summary)
         return {"status": "analyzing"}
 
     # --- STATE 3: Coding (Triggered by Human 'Proceed') ---
@@ -70,7 +81,7 @@ async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
                 redis_client.hset(f"task:{issue_key}", "state", "coding") # <--- STATE: coding
                 
                 plan = redis_client.hget(f"task:{issue_key}", "plan")
-                background_tasks.add_task(trigger_production, issue_key, plan)
+                background_tasks.add_task(trigger_production_with_repo, issue_key, repo_context, plan)
                 return {"status": "coding"}
             
             else:
@@ -80,19 +91,19 @@ async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
 
 # --- HANDOFF WRAPPERS ---
 
-def trigger_analyst(issue_key, summary):
+def trigger_analyst(issue_key, repo_context, summary):
     """
     Executes Analyst Phase.
     Moves state: analyzing -> awaiting_approval (via run_analysis)
     """
     try:
-        factory = AIFactory(issue_key, summary)
+        factory = AIFactory(issue_key, repo_context, summary)
         # Inside run_analysis, it will finish by setting state to 'awaiting_approval'
         factory.run_analysis()
     except Exception as e:
         logger.error(f"❌ Analysis failed for {issue_key}: {str(e)}")
 
-def trigger_production_with_repo(issue_key, plan, repo_context):
+def trigger_production_with_repo(issue_key, repo_context, plan):
     """
     Executes the Production Chain.
     Moves states: coding -> integrating -> security_scanning -> reviewing -> completed

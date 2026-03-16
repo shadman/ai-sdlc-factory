@@ -160,6 +160,8 @@ class AIFactory:
     def run_full_production_chain(self, issue_key, plan):
         """Phase 2: Full Factory Lifecycle"""
         
+        self.set_state("coding")
+        
         # 1. CODING
         active_dev = backend_agent if self.repo_context == "backend" else frontend_agent
         
@@ -196,8 +198,9 @@ class AIFactory:
 
         # 3. SECURITY_SCANNING
         self.set_state("security_scanning")
+        scan_cmd = "bandit -r ." if self.repo_context == "backend" else "npm audit"
         sec_task = Task(
-            description="Run bandit on /app/repos/backend and npm audit on /app/repos/frontend.",
+            description=f"Change directory to {self.working_dir} and run: {scan_cmd}",
             expected_output="Security scan report.",
             agent=security_agent
         )
@@ -236,7 +239,8 @@ class AIFactory:
         Crew(
             agents=[doc_agent, git_agent, reviewer_agent], 
             tasks=[doc_task, git_task, rev_task, finish_task],
-            process=Process.sequential # RAM safety
+            process=Process.sequential, # RAM safety
+            verbose=True
         ).kickoff(inputs=inputs)
 
         # 5. COMPLETED
