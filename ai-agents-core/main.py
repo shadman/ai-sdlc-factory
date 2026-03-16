@@ -1,5 +1,6 @@
 import os
 import json
+from tabnanny import verbose
 from crewai import Agent, Task, Crew, Process
 from langchain_community.llms import Ollama
 from phoenix.trace.langchain import LangChainInstrumentor
@@ -45,7 +46,7 @@ analyst_agent = Agent(
 backend_agent = Agent(
     role='Python Backend Developer',
     goal='Implement FastAPI logic and Postgres schema changes.',
-    backstory="""Change directory to {self.working_dir} and implement the logic.
+    backstory="""Change directory to {working_dir} and implement the logic.
     Follows /backend/AGENTS.md. Expert in Pydantic and SQLAlchemy.
     IMPORTANT: All file reads and shell commands must be scoped strictly to the path 
     provided by the Orchestrator (e.g., /app/repos/backend). 
@@ -58,7 +59,7 @@ backend_agent = Agent(
 frontend_agent = Agent(
     role='Angular Frontend Developer',
     goal='Create Angular standalone components and services.',
-    backstory="""Change directory to {self.working_dir} and implement the logic.
+    backstory="""Change directory to {working_dir} and implement the logic.
     Follows /frontend/AGENTS.md. Expert in Signals, RxJS, and Tailwind.
     IMPORTANT: All file reads and shell commands must be scoped strictly to the path 
     provided by the Orchestrator (e.g., /app/repos/frontend). 
@@ -78,8 +79,8 @@ integrator_agent = Agent(
 
 security_agent = Agent(
     role='SecOps Specialist',
-    goal='Scan for vulnerabilities using Bandit and NPM Audit.',
-    backstory="""Change directory to {self.working_dir} and implement the logic.
+    goal='Scan for vulnerabilities using Bandit and NPM Audit (if present).',
+    backstory="""Change directory to {working_dir} and implement the logic.
     Audit the code in /app/repos. You are the safety gate.
     ALWAYS perform security scans (bandit/npm audit) inside the working directory 
     provided by the Orchestrator. Do not scan the root directory.""",
@@ -129,7 +130,7 @@ class AIFactory:
         self.repo_context = repo_context 
         # This tells agents exactly where to work
         self.working_dir = f"/app/repos/{repo_context}" 
-        self.summary = summary or redis_client.hget(f"task:{issue_key}", "summary")
+        self.summary = summary or redis_client.hget(f"task:{self.issue_key}", "summary")
 
     # In your tasks, use self.working_dir to scope the FileReadTool or ShellTool
 
@@ -139,6 +140,8 @@ class AIFactory:
         print(f"--- 🔄 STATE: {state} ---")
 
     def run_analysis(self):
+        inputs = {'working_dir': self.working_dir, 'issue_key': self.issue_key}
+
         """Phase 1: ANALYZING -> AWAITING_APPROVAL"""
         task = Task(
             description=f"""Analyze {self.issue_key}: {self.summary}. 
@@ -161,17 +164,17 @@ class AIFactory:
         active_dev = backend_agent if self.repo_context == "backend" else frontend_agent
         
         # Pass the context here!
-        inputs = {'working_dir': self.working_dir, 'issue_key': issue_key}
+        inputs = {'working_dir': self.working_dir, 'issue_key': self.issue_key}
 
         dev_task = Task(
-            description=f"Implement {issue_key} logic in {self.working_dir} based on {plan}.",
+            description=f"Implement {self.issue_key} logic in {self.working_dir} based on {plan}.",
             expected_output="New code written to local files in /app/repos/.",
             agent=active_dev
         )
 
         # --- Logic to handle failure ---
         try:
-            Crew(agents=[active_dev], tasks=[dev_task]).kickoff(inputs=inputs)
+            Crew(agents=[active_dev], tasks=[dev_task], verbose=True).kickoff(inputs=inputs)
         except Exception as e:
             # If coding fails, trigger the repair tool
             repair_task = Task(
@@ -179,7 +182,7 @@ class AIFactory:
                 agent=active_dev,
                 expected_output="Repaired code."
             )
-            Crew(agents=[active_dev], tasks=[repair_task]).kickoff(inputs=inputs)
+            Crew(agents=[active_dev], tasks=[repair_task], verbose=True).kickoff(inputs=inputs)
 
 
         # 2. INTEGRATING
@@ -189,7 +192,7 @@ class AIFactory:
             expected_output="Verification report.",
             agent=integrator_agent
         )
-        Crew(agents=[integrator_agent], tasks=[int_task]).kickoff(inputs=inputs)
+        Crew(agents=[integrator_agent], tasks=[int_task], verbose=True).kickoff(inputs=inputs)
 
         # 3. SECURITY_SCANNING
         self.set_state("security_scanning")
@@ -198,7 +201,7 @@ class AIFactory:
             expected_output="Security scan report.",
             agent=security_agent
         )
-        Crew(agents=[security_agent], tasks=[sec_task]).kickoff(inputs=inputs)
+        Crew(agents=[security_agent], tasks=[sec_task], verbose=True).kickoff(inputs=inputs)
 
         # 4. REVIEWING (Branching, PR Creation, and Documentation)
         self.set_state("reviewing")
@@ -210,7 +213,7 @@ class AIFactory:
         )
 
         git_task = Task(
-            description=f"""Navigate to {self.working_dir}, create branch 'feature/{issue_key}', commit, and submit PR for {self.repo_context}.
+            description=f"""Navigate to {self.working_dir}, create branch 'feature/{self.issue_key}', commit, and submit PR for {self.repo_context}.
             IMPORTANT: Once the PR is merged by a human, trigger a notification 
             to the deployment server to start the build.""",
             expected_output="Confirmed Pull Request URLs.",
@@ -225,7 +228,7 @@ class AIFactory:
         )
 
         finish_task = Task(
-            description=f"Post a summary comment on {issue_key} with the PR link and final status.",
+            description=f"Post a summary comment on {self.issue_key} with the PR link and final status.",
             expected_output="Comment posted.",
             agent=reviewer_agent
         )
