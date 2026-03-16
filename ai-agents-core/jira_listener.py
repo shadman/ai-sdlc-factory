@@ -11,18 +11,29 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("jira_listener")
 
-
 app = FastAPI()
 redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 @app.post("/webhook/jira")
 async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
     payload = await request.json()
+    
+    # --- HANDLER FOR CI/CD AUTO-REPAIR (Test Failure) ---
+    # This handles both Jira-based and Jira-less repos
+    if payload.get("event") == "test_failed":
+        issue = payload.get("issue", {})
+        issue_key = issue.get("key") or f"INTERNAL-{uuid.uuid4().hex[:6].upper()}"
+        repo_context = payload.get("repo", "backend")
+        
+        logger.info(f"🛠️ CI/CD Auto-Repair triggered for {issue_key} in {repo_context}")
+        redis_client.hset(f"task:{issue_key}", "state", "repairing")
+        background_tasks.add_task(trigger_production_with_repo, issue_key, "Auto-repair failure", repo_context)
+        return {"status": "repairing", "issue_key": issue_key}
+
+    # --- HANDLER FOR JIRA WEBHOOKS ---
     issue = payload.get("issue", {})
     issue_key = issue.get("key")
-    
-    if not issue_key: 
-        return {"status": "ignored"}
+    if not issue_key: return {"status": "ignored"}
 
     event_type = payload.get("webhookEvent")
     fields = issue.get("fields", {})
@@ -81,14 +92,14 @@ def trigger_analyst(issue_key, summary):
     except Exception as e:
         logger.error(f"❌ Analysis failed for {issue_key}: {str(e)}")
 
-def trigger_production(issue_key, plan):
+def trigger_production_with_repo(issue_key, plan, repo_context):
     """
     Executes the Production Chain.
     Moves states: coding -> integrating -> security_scanning -> reviewing -> completed
     """
     try:
-        factory = AIFactory(issue_key)
+        factory = AIFactory(issue_key, repo_context=repo_context)
         # This method handles all remaining internal state transitions
         factory.run_full_production_chain(issue_key, plan)
     except Exception as e:
-        logger.error(f"❌ Production Chain failed for {issue_key}: {str(e)}")
+        logger.error(f"❌ Production Chain failed for {issue_key} ({repo_context}): {e}")
