@@ -1,6 +1,5 @@
 import os
 import json
-from tabnanny import verbose
 from crewai import Agent, Task, Crew, Process
 from langchain_community.llms import Ollama
 from phoenix.trace.langchain import LangChainInstrumentor
@@ -71,7 +70,7 @@ frontend_agent = Agent(
 
 integrator_agent = Agent(
     role='System Integration Specialist',
-    goal='Ensure the API contract between Backend and Frontend is perfect.',
+    goal='Ensure the API contract between Backend (/app/repos/backend), and Frontend (/app/repos/frontend) is perfect.',
     backstory="You bridge the gap. You ensure JSON keys match between Python and TypeScript.",
     llm=local_llm,
     verbose=True
@@ -118,18 +117,18 @@ reviewer_agent = Agent(
     backstory="""You are the final human-like quality check. 
     If a security scan or integration fails, you check the Phoenix trace logs 
     at http://phoenix:6006 to identify the exact step where logic deviated.""",
-    tools=[jira_comment_tool], 
+    tools=[file_tool, jira_comment_tool], 
     llm=local_llm,
     verbose=True
 )
 
 # --- THE FACTORY CLASS ---
 class AIFactory:
-    def __init__(self, issue_key, repo_context="backend", summary=None):
+    def __init__(self, issue_key, repo_contexts=["backend"], summary=None):
         self.issue_key = issue_key
-        self.repo_context = repo_context 
+        self.repo_contexts = repo_contexts if isinstance(repo_contexts, list) else [repo_contexts]
         # This tells agents exactly where to work
-        self.working_dir = f"/app/repos/{repo_context}" 
+        self.primary_dir = f"/app/repos/{self.repo_contexts[0]}"
         self.summary = summary or redis_client.hget(f"task:{self.issue_key}", "summary")
 
     # In your tasks, use self.working_dir to scope the FileReadTool or ShellTool
@@ -140,14 +139,16 @@ class AIFactory:
         print(f"--- 🔄 STATE: {state} ---")
 
     def run_analysis(self):
-        inputs = {'working_dir': self.working_dir, 'issue_key': self.issue_key}
+        inputs = {'working_dir': self.primary_dir, 'issue_key': self.issue_key, 'repo_contexts': self.repo_contexts}
+        repos_str = ", ".join(self.repo_contexts)
 
         """Phase 1: ANALYZING -> AWAITING_APPROVAL"""
         task = Task(
-            description=f"""Analyze {self.issue_key}: {self.summary}. 
-            1. Create a Technical Plan and Score.
-            2. Use JiraCommentTool to post the plan as a comment on {self.issue_key}.""",
-            expected_output="A Technical Plan with a Confidence Score post to Jira ticket.",
+            description=f"""Analyze {self.issue_key} for these repositories: {repos_str}.
+            Summary: {self.summary}. 
+            1. Create a Technical Plan and Calculate Score that covers all affected repos.
+            2. Use JiraCommentTool to post the plan and score as a comment on {self.issue_key}.""",
+            expected_output="A multi-repo Technical Plan with a Confidence Score post to Jira ticket.",
             agent=analyst_agent
         )
         crew = Crew(agents=[analyst_agent], tasks=[task], verbose=True)
@@ -157,91 +158,94 @@ class AIFactory:
         self.set_state("awaiting_approval")
         return result
 
-    def run_full_production_chain(self, issue_key, plan):
+    def run_full_production_chain(self, issue_key, repo_contexts, plan):
         """Phase 2: Full Factory Lifecycle"""
-        
-        self.set_state("coding")
-        
-        # 1. CODING
-        active_dev = backend_agent if self.repo_context == "backend" else frontend_agent
-        
-        # Pass the context here!
-        inputs = {'working_dir': self.working_dir, 'issue_key': self.issue_key}
 
-        dev_task = Task(
-            description=f"Implement {self.issue_key} logic in {self.working_dir} based on {plan}.",
-            expected_output="New code written to local files in /app/repos/.",
-            agent=active_dev
-        )
+        # 1. Loop through each repo context (e.g., Backend then Frontend)
+        for context in repo_contexts:
+            working_dir = f"/app/repos/{context}"
+            self.set_state(f"coding_{context}")
+        
+            # 1. CODING
+            active_dev = backend_agent if context == "backend" else frontend_agent
+            
+            # Pass the context here!
+            inputs = {'working_dir': working_dir, 'issue_key': issue_key}
 
-        # --- Logic to handle failure ---
-        try:
-            Crew(agents=[active_dev], tasks=[dev_task], verbose=True).kickoff(inputs=inputs)
-        except Exception as e:
-            # If coding fails, trigger the repair tool
-            repair_task = Task(
-                description=f"Fix the error that occurred: {str(e)} in {self.working_dir}",
-                agent=active_dev,
-                expected_output="Repaired code."
+            dev_task = Task(
+                description=f"Implement {issue_key} logic in {working_dir} based on {plan}.",
+                expected_output="New code written to local files in /app/repos/.",
+                agent=active_dev
             )
-            Crew(agents=[active_dev], tasks=[repair_task], verbose=True).kickoff(inputs=inputs)
+
+            # --- Logic to handle failure ---
+            try:
+                Crew(agents=[active_dev], tasks=[dev_task], verbose=True).kickoff(inputs=inputs)
+            except Exception as e:
+                # If coding fails, trigger the repair tool
+                repair_task = Task(
+                    description=f"Fix the error that occurred: {str(e)} in {working_dir}",
+                    agent=active_dev,
+                    expected_output="Repaired code."
+                )
+                Crew(agents=[active_dev], tasks=[repair_task], verbose=True).kickoff(inputs=inputs)
 
 
-        # 2. INTEGRATING
-        self.set_state("integrating")
-        int_task = Task(
-            description="Verify API contract between Python and Angular repositories.",
-            expected_output="Verification report.",
-            agent=integrator_agent
-        )
-        Crew(agents=[integrator_agent], tasks=[int_task], verbose=True).kickoff(inputs=inputs)
+            # 2. INTEGRATING
+            self.set_state(f"integrating_{context}")
+            int_task = Task(
+                description="Verify API contract between Python and Angular repositories.",
+                expected_output="Verification report.",
+                agent=integrator_agent
+            )
+            Crew(agents=[integrator_agent], tasks=[int_task], verbose=True).kickoff(inputs=inputs)
 
-        # 3. SECURITY_SCANNING
-        self.set_state("security_scanning")
-        scan_cmd = "bandit -r ." if self.repo_context == "backend" else "npm audit"
-        sec_task = Task(
-            description=f"Change directory to {self.working_dir} and run: {scan_cmd}",
-            expected_output="Security scan report.",
-            agent=security_agent
-        )
-        Crew(agents=[security_agent], tasks=[sec_task], verbose=True).kickoff(inputs=inputs)
+            # 3. SECURITY_SCANNING
+            self.set_state(f"security_scanning_{context}")
+            scan_cmd = "bandit -r ." if context == "backend" else "npm audit"
+            sec_task = Task(
+                description=f"Change directory to {working_dir} and run: {scan_cmd}",
+                expected_output="Security scan report.",
+                agent=security_agent
+            )
+            Crew(agents=[security_agent], tasks=[sec_task], verbose=True).kickoff(inputs=inputs)
 
-        # 4. REVIEWING (Branching, PR Creation, and Documentation)
-        self.set_state("reviewing")
-        
-        doc_task = Task(
-            description="Update AGENTS.md history section in the affected repositories.",
-            expected_output="Updated markdown files.",
-            agent=doc_agent
-        )
+            # 4. REVIEWING (Branching, PR Creation, and Documentation)
+            self.set_state(f"reviewing_{context}")
+            
+            doc_task = Task(
+                description="Update AGENTS.md history section in the affected repositories.",
+                expected_output="Updated markdown files.",
+                agent=doc_agent
+            )
 
-        git_task = Task(
-            description=f"""Navigate to {self.working_dir}, create branch 'feature/{self.issue_key}', commit, and submit PR for {self.repo_context}.
-            IMPORTANT: Once the PR is merged by a human, trigger a notification 
-            to the deployment server to start the build.""",
-            expected_output="Confirmed Pull Request URLs.",
-            agent=git_agent
-        )
+            git_task = Task(
+                description=f"""Navigate to {working_dir}, create branch 'feature/{self.issue_key}', commit, and submit PR for {context}.
+                IMPORTANT: Once the PR is merged by a human, trigger a notification 
+                to the deployment server to start the build.""",
+                expected_output="Confirmed Pull Request URLs.",
+                agent=git_agent
+            )
 
-        rev_task = Task(
-            description="Final review of code, documentation changes, and Pull Requests.",
-            expected_output="Final approval stamp and PR URLs.",
-            agent=reviewer_agent,
-            context=[doc_task, git_task] # Reviewer waits for Doc and Git to finish
-        )
+            rev_task = Task(
+                description="Final review of code, documentation changes, and Pull Requests.",
+                expected_output="Final approval stamp and PR URLs.",
+                agent=reviewer_agent,
+                context=[doc_task, git_task] # Reviewer waits for Doc and Git to finish
+            )
 
-        finish_task = Task(
-            description=f"Post a summary comment on {self.issue_key} with the PR link and final status.",
-            expected_output="Comment posted.",
-            agent=reviewer_agent
-        )
+            finish_task = Task(
+                description=f"Post a summary comment on {self.issue_key} with the PR link and final status.",
+                expected_output="Comment posted.",
+                agent=reviewer_agent
+            )
 
-        Crew(
-            agents=[doc_agent, git_agent, reviewer_agent], 
-            tasks=[doc_task, git_task, rev_task, finish_task],
-            process=Process.sequential, # RAM safety
-            verbose=True
-        ).kickoff(inputs=inputs)
+            Crew(
+                agents=[doc_agent, git_agent, reviewer_agent], 
+                tasks=[doc_task, git_task, rev_task, finish_task],
+                process=Process.sequential, # RAM safety
+                verbose=True
+            ).kickoff(inputs=inputs)
 
-        # 5. COMPLETED
-        self.set_state("completed")
+            # 5. COMPLETED
+            self.set_state(f"completed_{context}")

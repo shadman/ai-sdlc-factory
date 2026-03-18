@@ -27,12 +27,12 @@ async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
         repo_context = payload.get("repo", "backend")
         logs = payload.get("logs", "No logs provided.")
 
-        logger.info(f"🛠️ CI/CD Auto-Repair triggered for {issue_key} in {repo_context}")
+        logger.info(f"🛠️ CI/CD Auto-Repair triggered for {issue_key}")
         redis_client.hset(f"task:{issue_key}", "state", "repairing")
 
         # Prepend logs to the plan so the Agent sees them
         repair_plan = f"CI Failure detected. Error Logs:\n{logs}"
-        background_tasks.add_task(trigger_production_with_repo, issue_key, repo_context, repair_plan)
+        background_tasks.add_task(trigger_production_with_repo, issue_key, [repo_context], repair_plan)
 
         return {"status": "repairing", "issue_key": issue_key}
 
@@ -45,11 +45,20 @@ async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
     fields = issue.get("fields", {})
     status = fields.get("status", {}).get("name")
     summary = fields.get("summary", "")
-    components = [c.get("name") for c in fields.get("components", [])]
+    components = [c.get("name", "").lower() for c in fields.get("components", [])]
+    labels = [l.lower() for l in fields.get("labels", [])]
 
-    repo_context = "backend"
-    if any(c.lower() == "frontend" for c in components):
-        repo_context = "frontend"
+    # Detect all relevant label or componet
+    repo_contexts = []
+    if "backend" in components or "backend" in labels:
+        repo_contexts.append("backend")
+    if "frontend" in components or "frontend" in labels:
+        repo_contexts.append("frontend")
+
+    # Default if no labels found
+    if not repo_contexts: 
+        repo_contexts = ["backend"]
+        logger.info(f"⚠️ No context found for {issue_key}, defaulting to ['backend']")
 
     # --- STATE 1: Analyzing (Triggered by 'In Progress') ---
     if status == "In Progress" and event_type == "jira:issue_updated":
@@ -57,14 +66,12 @@ async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
         
         # Save initial context to Redis
         redis_client.hset(f"task:{issue_key}", mapping={
-            "state": "analyzing", # <--- STATE: analyzing
-            "components": json.dumps(components),
-            "repo_context": repo_context, 
+            "state": "analyzing",
+            "repo_contexts": json.dumps(repo_contexts),
             "summary": summary
         })
-        
-        background_tasks.add_task(trigger_analyst, issue_key, repo_context, summary)
-        return {"status": "analyzing"}
+        background_tasks.add_task(trigger_analyst, issue_key, repo_contexts, summary)
+        return {"status": "analyzing", "contexts": repo_contexts}
 
     # --- STATE 3: Coding (Triggered by Human 'Proceed') ---
     if event_type == "comment_created":
@@ -72,6 +79,7 @@ async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
         
         if "proceed" in comment:
             current_state = redis_client.hget(f"task:{issue_key}", "state")
+            repo_contexts = redis_client.hget(f"task:{issue_key}", "repo_contexts")
             
             # Security check: Only start coding if we are currently awaiting approval
             if current_state == "awaiting_approval":
@@ -79,9 +87,9 @@ async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
                 
                 # Move to coding immediately to lock the state
                 redis_client.hset(f"task:{issue_key}", "state", "coding") # <--- STATE: coding
-                
+
                 plan = redis_client.hget(f"task:{issue_key}", "plan")
-                background_tasks.add_task(trigger_production_with_repo, issue_key, repo_context, plan)
+                background_tasks.add_task(trigger_production_with_repo, issue_key, repo_contexts, plan)
                 return {"status": "coding"}
             
             else:
@@ -91,26 +99,26 @@ async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
 
 # --- HANDOFF WRAPPERS ---
 
-def trigger_analyst(issue_key, repo_context, summary):
+def trigger_analyst(issue_key, repo_contexts, summary):
     """
     Executes Analyst Phase.
     Moves state: analyzing -> awaiting_approval (via run_analysis)
     """
     try:
-        factory = AIFactory(issue_key, repo_context, summary)
+        factory = AIFactory(issue_key, repo_contexts, summary)
         # Inside run_analysis, it will finish by setting state to 'awaiting_approval'
         factory.run_analysis()
     except Exception as e:
         logger.error(f"❌ Analysis failed for {issue_key}: {str(e)}")
 
-def trigger_production_with_repo(issue_key, repo_context, plan):
+def trigger_production_with_repo(issue_key, repo_contexts, plan):
     """
     Executes the Production Chain.
     Moves states: coding -> integrating -> security_scanning -> reviewing -> completed
     """
     try:
-        factory = AIFactory(issue_key, repo_context=repo_context)
+        factory = AIFactory(issue_key, repo_contexts=repo_contexts)
         # This method handles all remaining internal state transitions
-        factory.run_full_production_chain(issue_key, plan)
+        factory.run_full_production_chain(issue_key, repo_contexts, plan)
     except Exception as e:
-        logger.error(f"❌ Production Chain failed for {issue_key} ({repo_context}): {e}")
+        logger.error(f"❌ Production Chain failed for {issue_key} ({repo_contexts}): {e}")
