@@ -1,4 +1,26 @@
-- name: Trigger AI Factory Repair
+# angular-frontend/.github/workflows/ci.yml
+name: Frontend AI-Heal Pipeline
+
+on: [push]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with: { node-version: '18' }
+        
+      - name: Install & Test
+        id: run_tests
+        run: |
+          npm install
+          npm run test -- --watch=false
+        continue-on-error: true
+      
+      - name: Trigger AI Factory Repair
         if: steps.run_tests.outcome == 'failure'
         run: |
           curl -X POST http://YOUR_FACTORY_IP:8000/webhook/jira \
