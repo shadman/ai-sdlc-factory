@@ -1,4 +1,4 @@
-# angular-frontend/.github/workflows/ci.yml
+# frontend/.github/workflows/ci.yml
 name: Frontend AI-Heal Pipeline
 
 on: [push]
