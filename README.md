@@ -2,7 +2,15 @@
 
 This is a localized, AI-driven development environment designed to automate the lifecycle of an E-commerce platform (Angular & Python) using a multi-repo agentic squad.
 
----
+## 🚀 Overview
+The Agentic SDLC Factory is a headless engineering team powered by DeepSeek-Coder-V2 and CrewAI. It monitors Jira for new tasks, analyzes requirements, implements code, performs security audits, and manages Git operations autonomously.
+
+### Key Capabilities:
+- **Multi-Repo Context:** Processes Full-Stack tickets by coordinating changes across Backend (FastAPI) and Frontend (Angular) repositories.
+- **Self-Healing CI:** Automatically triggers a "Repair Task" if a test failure is detected in the CI/CD pipeline.
+- **Safety Gates:** Integrated security scanning (Bandit/NPM Audit) and a "Human-in-the-loop" approval state via Jira comments.
+- **Observability:** Full execution tracing using Arize Phoenix and real-time state tracking in Redis.
+
 
 ## 🏗️ 1. System Architecture & Workflow
 
@@ -31,6 +39,8 @@ The factory operates as a **State Machine** orchestrated by Redis and CrewAI.
 | **Backend** | Python FastAPI + Postgres |
 | **Frontend** | Angular 17+ (Standalone, Tailwind) |
 | **Observability** | Arize Phoenix (Port 6006) |
+| **Web Framework** | FastAPI (Jira Webhook Listener) |
+| **Infrastructure** | Docker Compose |
 
 ---
 
@@ -44,10 +54,21 @@ The factory operates as a **State Machine** orchestrated by Redis and CrewAI.
 │   ├── main.py            # CrewAI Squad Definition
 │   ├── jira_listener.py   # FastAPI Webhook Gateway
 │   └── requirements.txt   # Core Dependencies
+│   └── .env               # Environment Variables
 ├── docker-compose.yml     # Infrastructure (Profiles: 'default', 'ai')
 └── README.md              # This file
 ```
 
+### Environment Configuration
+Create a `.env` file in the root directory:
+```
+JIRA_URL=https://your-domain.atlassian.net
+JIRA_USER=your-email@example.com
+JIRA_API_TOKEN=your-token
+GITHUB_TOKEN=your-github-pat
+OLLAMA_HOST=http://ollama:11434
+PHOENIX_ENDPOINT=http://phoenix:4317
+```
 
 ## 🚀 4. Setup Instructions (16GB RAM Optimized)
 ### Step 1: Launch Infrastructure
