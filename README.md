@@ -165,4 +165,12 @@ Would you like me to generate a **GitHub Actions workflow** to automate the fina
 ```
 
 ## Run: 
-docker-compose --profile ai up -d
+
+# Start E-commerce App
+`docker-compose up -d db backend-api frontend-ui`
+
+# Start AI Squad & Brain
+`docker-compose --profile ai up -d`
+
+# Initialize the Brain
+`docker exec -it ai-brain ollama pull deepseek-coder-v2:lite`

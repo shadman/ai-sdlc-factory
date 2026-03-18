@@ -1,0 +1,22 @@
+name: Frontend Production Deployment
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node & Build
+        run: |
+          npm install
+          npm run build -- --configuration=production
+
+      - name: Deploy to Server/S3
+        run: |
+          # Example: Uploading the 'dist/' folder to a server via rsync
+          # OR: Use a GitHub Action like 'aws-actions/configure-aws-credentials'
+          scp -r dist/your-app-name/* user@your-server:/var/www/html/

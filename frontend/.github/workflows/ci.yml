@@ -1,0 +1,10 @@
+- name: Trigger AI Factory Repair
+        if: steps.run_tests.outcome == 'failure'
+        run: |
+          curl -X POST http://YOUR_FACTORY_IP:8000/webhook/jira \
+               -H "Content-Type: application/json" \
+               -d '{
+                     "issue": {"key": "${{ github.event.head_commit.message }}"}, 
+                     "event": "test_failed",
+                     "repo": "frontend"
+                   }'
