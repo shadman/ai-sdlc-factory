@@ -14,13 +14,14 @@ logger = logging.getLogger("jira_listener")
 
 app = FastAPI()
 redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
+
 
 @app.get("/webhook/jira")
 async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
-    print("test")
-    print("${OLLAMA_HOST}")
-    pass
+    return {"status": "ok", "message": "webhook listener alive"}
+
+@app.post("/webhook/jira")
+async def jira_webhook(request: Request, background_tasks: BackgroundTasks):
     payload = await request.json()
     
     # --- HANDLER FOR CI/CD AUTO-REPAIR (Test Failure) ---
