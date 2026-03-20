@@ -158,11 +158,16 @@ sequenceDiagram
 ```
 
 ## Next Step for Team: 
-Ensure your Jira Webhooks are pointing to http://[YOUR-IP]:8000/webhook/jira
+- Ensure your Jira Webhooks are pointing to http://[YOUR-IP]:8000/webhook/jira
 
-Create a **JIRA** account and configure a **Webhook** inside.
+- Create a **JIRA** account and configure a **Webhook** inside.
 
-Generate a **GitHub Actions workflow** to automate the final deployment once the Reviewer Agent approves the PR.
+- Generate a **GitHub Actions workflow** to automate the final deployment once the Reviewer Agent approves the PR.
+
+- To avoid tracking git changes from `backend` and `frontend` directories: 
+
+`git rm -r --cached backend/`
+`git rm -r --cached frontend/`
 
 
 ## Important Commands: 
