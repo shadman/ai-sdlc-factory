@@ -1,11 +1,10 @@
 import os
 import json
-from crewai import Agent, Task, Crew, Process
-from langchain_community.llms import Ollama
-from phoenix.trace.langchain import LangChainInstrumentor
-from crewai_tools import FileReadTool, JiraTool, ShellTool
+from crewai import Agent, Task, Crew, Process, LLM
+from crewai_tools import FileReadTool
 from redis import Redis
 from tools.jira_tools import JiraCommentTool
+from tools.shell_tool import ShellExecutionTool
 
 # 1. Load Environment Variables
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
@@ -18,18 +17,29 @@ PHOENIX_ENDPOINT = os.getenv("PHOENIX_ENDPOINT", "http://phoenix:4317")
 redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 # 3. Phoenix Instrument immediately
-LangChainInstrumentor(endpoint=PHOENIX_ENDPOINT).instrument()
+try:
+    # Phoenix < 2 (legacy)
+    from phoenix.trace.langchain import LangChainInstrumentor
+
+    LangChainInstrumentor(endpoint=PHOENIX_ENDPOINT).instrument()
+except ImportError:
+    # Phoenix >= 2 (legacy module removed)
+    os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", PHOENIX_ENDPOINT)
+    from phoenix.otel import register
+    from openinference.instrumentation.langchain import LangChainInstrumentor
+
+    tracer_provider = register(set_global_tracer_provider=False)
+    LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
 
 # 4. Configuration: Optimized for 16GB RAM
-local_llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_HOST, timeout=300)
+local_llm = LLM(model=f"ollama/{LLM_MODEL}", base_url=OLLAMA_HOST, timeout=300)
 
 # 5. Jira tool to handle comments
 jira_comment_tool = JiraCommentTool()
 
 # 6. Tools initialization
 file_tool = FileReadTool()
-jira_tool = JiraTool()
-shell_tool = ShellTool()
+shell_tool = ShellExecutionTool()
 
 # --- AGENT DEFINITIONS ---
 
@@ -37,7 +47,7 @@ analyst_agent = Agent(
     role='Lead SDLC Analyst',
     goal='Analyze Jira tickets and codebase to provide a confidence score and technical plan.',
     backstory="Expert architect. You read repo-specific AGENTS.md files to ensure constraints are met.",
-    tools=[file_tool, jira_tool, jira_comment_tool], 
+    tools=[file_tool, jira_comment_tool],
     llm=local_llm,
     verbose=True
 )
@@ -95,7 +105,7 @@ git_agent = Agent(
     BEFORE performing ANY git operations, verify your current working directory 
     matches the Orchestrator's target path. Only execute git commands within the product repository directory.
     Before pushing, you MUST set git config user.email and user.name.
-    You use the GITHUB_TOKEN to authenticate. You always create branches named feature/ISSUE-KEY.
+    You use the GITHUB_TOKEN to authenticate. You always create branches named feature/ISSUE-KEY from master branch.
     You navigate to the repo folder and use git remote set-url origin to inject the GITHUB_TOKEN before pushing, ensuring a headless environment can authenticate.""",
     tools=[shell_tool],
     llm=local_llm,
@@ -220,7 +230,7 @@ class AIFactory:
             )
 
             git_task = Task(
-                description=f"""Navigate to {working_dir}, create branch 'feature/{self.issue_key}', commit, and submit PR for {context}.
+                description=f"""Navigate to {working_dir}, create branch 'feature/{self.issue_key}' from master branch, commit, and submit PR for {context}.
                 IMPORTANT: Once the PR is merged by a human, trigger a notification 
                 to the deployment server to start the build.""",
                 expected_output="Confirmed Pull Request URLs.",

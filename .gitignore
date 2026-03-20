@@ -1,0 +1,9 @@
+
+backend/
+backend/*
+
+frontend/
+frontend/*
+
+.env
+

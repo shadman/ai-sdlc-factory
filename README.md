@@ -47,14 +47,15 @@ The factory operates as a **State Machine** orchestrated by Redis and CrewAI.
 ## 📂 3. Project Structure
 ```text
 .
-├── /angular-frontend      # Frontend Repo (Rules in AGENTS.md)
-├── /python-backend        # Backend Repo (Rules in AGENTS.md)
+├── /frontend              # Frontend Repo (Rules in AGENTS.md)
+├── /backend               # Backend Repo (Rules in AGENTS.md)
+├── /data                  # For LLM 
 ├── /ai-agents-core        # Factory Brain
 │   ├── AGENTS.md          # Factory SOPs (Standard Operating Procedures)
 │   ├── main.py            # CrewAI Squad Definition
-│   ├── jira_listener.py   # FastAPI Webhook Gateway
 │   └── requirements.txt   # Core Dependencies
 │   └── .env               # Environment Variables
+├── jira_listener.py       # FastAPI Webhook Gateway
 ├── docker-compose.yml     # Infrastructure (Profiles: 'default', 'ai')
 └── README.md              # This file
 ```
@@ -157,14 +158,14 @@ sequenceDiagram
 ```
 
 ## Next Step for Team: 
-Ensure your Jira Webhooks are pointing to http://[YOUR-IP]:8000/webhook/jira.
+Ensure your Jira Webhooks are pointing to http://[YOUR-IP]:8000/webhook/jira
 
-```
-### What would you like me to do next?
-Would you like me to generate a **GitHub Actions workflow** to automate the final deployment once the Reviewer Agent approves the PR?
-```
+Create a **JIRA** account and configure a **Webhook** inside.
 
-## Run: 
+Generate a **GitHub Actions workflow** to automate the final deployment once the Reviewer Agent approves the PR.
+
+
+## Important Commands: 
 
 # Start E-commerce App
 `docker-compose up -d db backend-api frontend-ui`
@@ -174,3 +175,16 @@ Would you like me to generate a **GitHub Actions workflow** to automate the fina
 
 # Initialize the Brain
 `docker exec -it ai-brain ollama pull deepseek-coder-v2:lite`
+
+# If you change something
+`docker-compose up -d --build ai-squad`
+
+
+# Phoenix 
+http://localhost:6006/
+
+# Ollama
+http://localhost:11434/
+
+# Jira Listener
+http://localhost:8000/webhook/jira

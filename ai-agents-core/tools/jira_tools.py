@@ -1,10 +1,10 @@
-from crewai_tools import BaseTool
+from crewai.tools import BaseTool
 from atlassian import Jira  # Make sure to pip install atlassian-python-api
 import os
 
 class JiraCommentTool(BaseTool):
-    name: "JiraCommentTool"
-    description: "Use this tool to post a progress update or completion comment to a Jira ticket."
+    name: str = "JiraCommentTool"
+    description: str = "Use this tool to post a progress update or completion comment to a Jira ticket."
 
     def _run(self, issue_key: str, comment: str) -> str:
         jira = Jira(

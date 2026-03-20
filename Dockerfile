@@ -34,11 +34,11 @@ ENTRYPOINT ["./entrypoint.sh"]
 COPY . .
 
 # Ensure git is globally configured for the AI agent
-RUN git config --global user.name "AI Factory Bot" && \
-    git config --global user.email "ai-factory-bot@yourcompany.com"
+RUN git config --global user.name "Agentic SDLC" && \
+    git config --global user.email "shadman.jamil@gmail.com"
 
 # Expose FastAPI port
 EXPOSE 8000
 
 # Run the listener (or your entrypoint)
-CMD ["python", "jira_listener.py"]
+CMD ["python", "ai-agents-core/jira_listener.py"]

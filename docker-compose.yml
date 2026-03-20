@@ -14,7 +14,9 @@ services:
         limits: { memory: 512M }
 
   backend-api:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: eco-backend
     networks: [ai-factory-net]
     depends_on: [db]
@@ -25,7 +27,9 @@ services:
         limits: { memory: 1G }
 
   frontend-ui:
-    build: ./frontend
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: eco-frontend
     networks: [ai-factory-net]
     ports: ["4200:4200"]
@@ -66,13 +70,13 @@ services:
 
   ai-squad:
     build:
-      context: ./ai-agents-core
+      context: .
       dockerfile: Dockerfile
     container_name: ai-squad
     networks: [ai-factory-net]
     profiles: ["ai"]
     ports: ["8000:8000"] # Needed for Jira Webhook listener
-    env_file: .env
+    env_file: ./.env
     environment:
       - OLLAMA_HOST=http://ollama:11434
       - REDIS_HOST=redis
