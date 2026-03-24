@@ -26,19 +26,20 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY entrypoint.sh .
-RUN chmod +x entrypoint.sh
-ENTRYPOINT ["./entrypoint.sh"]
-
 # Copy the core agent logic
 COPY . .
+
+# Fix execute permission AFTER COPY . . (Windows hosts strip +x bit)
+RUN chmod +x entrypoint.sh
 
 # Ensure git is globally configured for the AI agent
 RUN git config --global user.name "Agentic SDLC" && \
     git config --global user.email "shadman.jamil@gmail.com"
 
-# Expose FastAPI port
-EXPOSE 8000
+ENTRYPOINT ["./entrypoint.sh"]
 
-# Run the listener (or your entrypoint)
-CMD ["python", "ai-agents-core/jira_listener.py"]
+# Expose agents-api port
+EXPOSE 9000
+
+# Run the agents-api service
+CMD ["bash", "-c", "cd /app/ai-agents-core && uvicorn agents_api:app --host 0.0.0.0 --port 9000"]

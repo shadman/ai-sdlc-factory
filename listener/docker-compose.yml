@@ -1,0 +1,16 @@
+services:
+  jira-listener:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jira-listener
+    ports:
+      - "8000:8000"
+    env_file: ./.env
+    # AGENTS_API_URL in .env should point to wherever agents-api is running:
+    #   - Same machine:  http://host.docker.internal:9000
+    #   - Remote deploy: https://your-agents-api.yourdomain.com
+    deploy:
+      resources:
+        limits:
+          memory: 256M

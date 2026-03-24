@@ -46,30 +46,31 @@ The factory operates as a **State Machine** orchestrated by Redis and CrewAI.
 
 ## 📂 3. Project Structure
 ```text
-.
-├── /frontend              # Frontend Repo (Rules in AGENTS.md)
-├── /backend               # Backend Repo (Rules in AGENTS.md)
-├── /data                  # For LLM 
-├── /ai-agents-core        # Factory Brain
-│   ├── AGENTS.md          # Factory SOPs (Standard Operating Procedures)
-│   ├── main.py            # CrewAI Squad Definition
-│   └── requirements.txt   # Core Dependencies
-│   └── .env               # Environment Variables
-├── jira_listener.py       # FastAPI Webhook Gateway
-├── docker-compose.yml     # Infrastructure (Profiles: 'default', 'ai')
-└── README.md              # This file
+ai-sdlc-factory/
+│
+├── listener/                  ← deploy this independently
+│   ├── jira_listener.py
+│   ├── requirements.txt       (fastapi, uvicorn, redis, requests only)
+│   ├── Dockerfile             (python:3.11-slim, no git/gh/node)
+│   ├── docker-compose.yml
+│   └── .env.sample            (REDIS_URL, AGENTS_API_URL)
+│
+├── ai-agents-core/            ← agents live here
+│   ├── agents_api.py
+│   ├── main.py
+│   └── tools/
+│
+├── backend/                   ← backend  repository code, considering master as main branch
+├── frontend/                  ← frontend repository code, considering master as main branch
+│
+├── Dockerfile                 ← agents only, CMD → agents_api on :9000
+├── docker-compose.yml         ← agents only (ollama, phoenix, agents-api, db, backend, frontend)
+└── entrypoint.sh
+
 ```
 
 ### Environment Configuration
-Create a `.env` file in the root directory:
-```
-JIRA_URL=https://your-domain.atlassian.net
-JIRA_USER=your-email@example.com
-JIRA_API_TOKEN=your-token
-GITHUB_TOKEN=your-github-pat
-OLLAMA_HOST=http://ollama:11434
-PHOENIX_ENDPOINT=http://phoenix:4317
-```
+Create a `.env` file in the root directory by using `.env.sample` file
 
 ## 🚀 4. Setup Instructions (16GB RAM Optimized)
 ### Step 1: Launch Infrastructure
@@ -90,16 +91,6 @@ Download the specialized coding model into the local Ollama container:
 docker exec -it ai-brain ollama pull deepseek-coder-v2:lite
 ```
 
-### Step 3: Configure Environment
-Create a .env file in ./ai-agents-core/:
-
-```
-JIRA_DOMAIN=yourdomain.atlassian.net
-JIRA_USERNAME=your-email@example.com
-JIRA_API_TOKEN=your-token
-REDIS_HOST=redis
-PHOENIX_HOST=http://phoenix:6006
-```
 
 ## 🤖 5. Interacting with the Factory
 

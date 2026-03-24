@@ -7,14 +7,21 @@ from tools.jira_tools import JiraCommentTool
 from tools.shell_tool import ShellExecutionTool
 
 # 1. Load Environment Variables
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
-LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-coder-v2:lite")
+REDIS_HOST   = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT   = int(os.getenv("REDIS_PORT", 6379))
+OLLAMA_HOST  = os.getenv("OLLAMA_HOST", "http://ollama:11434")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")   # ollama | groq | openai
+LLM_MODEL    = os.getenv("LLM_MODEL", "deepseek-coder-v2:lite")
 PHOENIX_ENDPOINT = os.getenv("PHOENIX_ENDPOINT", "http://phoenix:4317")
 
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+REDIS_URL      = os.getenv("REDIS_URL")  # e.g. rediss://default:<pwd>@host:port (Redis Cloud)
+
 # 2. Initialize Redis
-redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+if REDIS_URL:
+    redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
+else:
+    redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
 
 # 3. Phoenix Instrument immediately
 try:
@@ -31,8 +38,15 @@ except ImportError:
     tracer_provider = register(set_global_tracer_provider=False)
     LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
 
-# 4. Configuration: Optimized for 16GB RAM
-local_llm = LLM(model=f"ollama/{LLM_MODEL}", base_url=OLLAMA_HOST, timeout=300)
+# 4. LLM Configuration
+# - Local:  LLM_PROVIDER=ollama  + OLLAMA_HOST
+# - Cloud:  LLM_PROVIDER=groq    + GROQ_API_KEY     (recommended for Hugging Face)
+#           LLM_PROVIDER=openai  + OPENAI_API_KEY
+if LLM_PROVIDER == "ollama":
+    local_llm = LLM(model=f"ollama/{LLM_MODEL}", base_url=OLLAMA_HOST, timeout=300)
+else:
+    # LiteLLM picks up API keys from env automatically (GROQ_API_KEY, OPENAI_API_KEY, etc.)
+    local_llm = LLM(model=f"{LLM_PROVIDER}/{LLM_MODEL}", timeout=300)
 
 # 5. Jira tool to handle comments
 jira_comment_tool = JiraCommentTool()

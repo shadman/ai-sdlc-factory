@@ -1,0 +1,5 @@
+# Jira Listener — minimal dependencies (no AI/agent packages needed)
+fastapi
+uvicorn
+redis
+requests

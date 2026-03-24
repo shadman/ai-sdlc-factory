@@ -19,9 +19,11 @@ services:
       dockerfile: Dockerfile
     container_name: eco-backend
     networks: [ai-factory-net]
+    ports: ["8080:8080"]
     depends_on: [db]
     environment:
       DATABASE_URL: postgresql://admin:admin@db:5432/ecommerce
+    command: ["bash", "-c", "echo 'backend-api: add your start command here'"]
     deploy:
       resources:
         limits: { memory: 1G }
@@ -33,6 +35,7 @@ services:
     container_name: eco-frontend
     networks: [ai-factory-net]
     ports: ["4200:4200"]
+    command: ["bash", "-c", "echo 'frontend-ui: add your start command here'"]
     deploy:
       resources:
         limits: { memory: 512M }
@@ -49,15 +52,6 @@ services:
       resources:
         limits: { memory: 6G }
 
-  redis:
-    image: redis:alpine
-    container_name: ai-state
-    networks: [ai-factory-net]
-    profiles: ["ai"]
-    deploy:
-      resources:
-        limits: { memory: 256M }
-
   phoenix:
     image: arizephoenix/phoenix:latest
     container_name: ai-observability
@@ -68,18 +62,19 @@ services:
       resources:
         limits: { memory: 1G }
 
-  ai-squad:
+  # AI Agent service — needs Ollama + Phoenix
+  agents-api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ai-squad
+    container_name: agents-api
     networks: [ai-factory-net]
     profiles: ["ai"]
-    ports: ["8000:8000"] # Needed for Jira Webhook listener
+    ports: ["9000:9000"]
     env_file: ./.env
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      - REDIS_HOST=redis
+      - REDIS_URL=${REDIS_URL}
       - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:4317
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GIT_USER_NAME=${GIT_USER_NAME}
@@ -87,10 +82,14 @@ services:
       - JIRA_DOMAIN=${JIRA_DOMAIN}
       - JIRA_USERNAME=${JIRA_USERNAME}
       - JIRA_API_TOKEN=${JIRA_API_TOKEN}
+      - BACKEND_REPO_URL=${BACKEND_REPO_URL}
+      - FRONTEND_REPO_URL=${FRONTEND_REPO_URL}
+    # Volumes for local dev only — on Hugging Face, entrypoint.sh clones the repos instead
     volumes:
       - ./backend:/app/repos/backend
       - ./frontend:/app/repos/frontend
-    depends_on: [ollama, redis, phoenix]
+    depends_on: [ollama, phoenix]
+    command: ["bash", "-c", "cd /app/ai-agents-core && uvicorn agents_api:app --host 0.0.0.0 --port 9000"]
     deploy:
       resources:
         limits: { memory: 2G }
