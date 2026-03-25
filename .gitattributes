@@ -1,0 +1,10 @@
+# Force LF line endings for shell scripts on all platforms
+# Prevents "no such file or directory" errors on Linux/Hugging Face
+# when scripts are authored on Windows (CRLF)
+
+*.sh    text eol=lf
+*.bash  text eol=lf
+
+# Also enforce LF for Docker-related files
+Dockerfile*     text eol=lf
+entrypoint*     text eol=lf

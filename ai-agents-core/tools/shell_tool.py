@@ -16,6 +16,7 @@ class ShellExecutionTool(BaseTool):
             result = subprocess.run(
                 command,
                 shell=True,
+                executable="/bin/bash",  # force bash — /bin/sh (dash) lacks source, [[, etc.
                 capture_output=True,
                 text=True,
                 timeout=120,

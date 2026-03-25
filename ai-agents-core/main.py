@@ -23,20 +23,26 @@ if REDIS_URL:
 else:
     redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
 
-# 3. Phoenix Instrument immediately
-try:
-    # Phoenix < 2 (legacy)
-    from phoenix.trace.langchain import LangChainInstrumentor
-
-    LangChainInstrumentor(endpoint=PHOENIX_ENDPOINT).instrument()
-except ImportError:
-    # Phoenix >= 2 (legacy module removed)
-    os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", PHOENIX_ENDPOINT)
-    from phoenix.otel import register
-    from openinference.instrumentation.langchain import LangChainInstrumentor
-
-    tracer_provider = register(set_global_tracer_provider=False)
-    LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+# 3. Phoenix Instrumentation (optional — skipped gracefully if endpoint not set or unreachable)
+if PHOENIX_ENDPOINT:
+    try:
+        from phoenix.trace.langchain import LangChainInstrumentor
+        LangChainInstrumentor(endpoint=PHOENIX_ENDPOINT).instrument()
+        print(f"✅ Phoenix tracing enabled → {PHOENIX_ENDPOINT}")
+    except ImportError:
+        try:
+            os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", PHOENIX_ENDPOINT)
+            from phoenix.otel import register
+            from openinference.instrumentation.langchain import LangChainInstrumentor
+            tracer_provider = register(set_global_tracer_provider=False)
+            LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+            print(f"✅ Phoenix tracing enabled → {PHOENIX_ENDPOINT}")
+        except Exception as e:
+            print(f"⚠️ Phoenix tracing unavailable: {e}. Continuing without observability.")
+    except Exception as e:
+        print(f"⚠️ Phoenix tracing unavailable: {e}. Continuing without observability.")
+else:
+    print("⚠️ PHOENIX_COLLECTOR_ENDPOINT not set — tracing disabled.")
 
 # 4. LLM Configuration
 # - Local:  LLM_PROVIDER=ollama  + OLLAMA_HOST
@@ -185,35 +191,43 @@ class AIFactory:
     def run_full_production_chain(self, issue_key, repo_contexts, plan):
         """Phase 2: Full Factory Lifecycle"""
 
-        # 1. Loop through each repo context (e.g., Backend then Frontend)
         for context in repo_contexts:
             working_dir = f"/app/repos/{context}"
-            self.set_state(f"coding_{context}")
-        
-            # 1. CODING
-            active_dev = backend_agent if context == "backend" else frontend_agent
-            
-            # Pass the context here!
+            branch_name = f"feature/{issue_key}"
             inputs = {'working_dir': working_dir, 'issue_key': issue_key}
+
+            # 0. BRANCHING — create feature branch BEFORE any code is written
+            self.set_state(f"branching_{context}")
+            branch_task = Task(
+                description=f"""Navigate to {working_dir} and prepare the feature branch:
+                1. git checkout master
+                2. git pull origin master
+                3. git checkout -b {branch_name}
+                4. Confirm with: git branch --show-current
+                Do NOT skip any step. All code changes must land on this branch.""",
+                expected_output=f"Branch {branch_name} created and checked out in {working_dir}.",
+                agent=git_agent
+            )
+            Crew(agents=[git_agent], tasks=[branch_task], verbose=True).kickoff(inputs=inputs)
+
+            # 1. CODING (now on feature branch)
+            self.set_state(f"coding_{context}")
+            active_dev = backend_agent if context == "backend" else frontend_agent
 
             dev_task = Task(
                 description=f"Implement {issue_key} logic in {working_dir} based on {plan}.",
                 expected_output="New code written to local files in /app/repos/.",
                 agent=active_dev
             )
-
-            # --- Logic to handle failure ---
             try:
                 Crew(agents=[active_dev], tasks=[dev_task], verbose=True).kickoff(inputs=inputs)
             except Exception as e:
-                # If coding fails, trigger the repair tool
                 repair_task = Task(
                     description=f"Fix the error that occurred: {str(e)} in {working_dir}",
                     agent=active_dev,
                     expected_output="Repaired code."
                 )
                 Crew(agents=[active_dev], tasks=[repair_task], verbose=True).kickoff(inputs=inputs)
-
 
             # 2. INTEGRATING
             self.set_state(f"integrating_{context}")
@@ -224,7 +238,7 @@ class AIFactory:
             )
             Crew(agents=[integrator_agent], tasks=[int_task], verbose=True).kickoff(inputs=inputs)
 
-            # 3. SECURITY_SCANNING
+            # 3. SECURITY SCANNING
             self.set_state(f"security_scanning_{context}")
             scan_cmd = "bandit -r ." if context == "backend" else "npm audit"
             sec_task = Task(
@@ -234,20 +248,24 @@ class AIFactory:
             )
             Crew(agents=[security_agent], tasks=[sec_task], verbose=True).kickoff(inputs=inputs)
 
-            # 4. REVIEWING (Branching, PR Creation, and Documentation)
+            # 4. REVIEWING — commit, push, open PR, update docs
             self.set_state(f"reviewing_{context}")
-            
+
             doc_task = Task(
-                description="Update AGENTS.md history section in the affected repositories.",
+                description=f"Update AGENTS.md history section in {working_dir}.",
                 expected_output="Updated markdown files.",
                 agent=doc_agent
             )
 
             git_task = Task(
-                description=f"""Navigate to {working_dir}, create branch 'feature/{self.issue_key}' from master branch, commit, and submit PR for {context}.
-                IMPORTANT: Once the PR is merged by a human, trigger a notification 
-                to the deployment server to start the build.""",
-                expected_output="Confirmed Pull Request URLs.",
+                description=f"""Navigate to {working_dir}. The branch {branch_name} already exists and is checked out.
+                DO NOT create a new branch. Execute these steps in order:
+                1. git add -A
+                2. git commit -m "feat({context}): {issue_key} - AI-generated implementation"
+                3. git push origin {branch_name}
+                4. gh pr create --title "feat: {issue_key}" --body "AI-generated implementation. Awaiting human review." --base master
+                Return the Pull Request URL.""",
+                expected_output=f"Pull Request URL for {branch_name} → master.",
                 agent=git_agent
             )
 
@@ -255,19 +273,19 @@ class AIFactory:
                 description="Final review of code, documentation changes, and Pull Requests.",
                 expected_output="Final approval stamp and PR URLs.",
                 agent=reviewer_agent,
-                context=[doc_task, git_task] # Reviewer waits for Doc and Git to finish
+                context=[doc_task, git_task]
             )
 
             finish_task = Task(
                 description=f"Post a summary comment on {self.issue_key} with the PR link and final status.",
-                expected_output="Comment posted.",
+                expected_output="Comment posted to Jira.",
                 agent=reviewer_agent
             )
 
             Crew(
-                agents=[doc_agent, git_agent, reviewer_agent], 
+                agents=[doc_agent, git_agent, reviewer_agent],
                 tasks=[doc_task, git_task, rev_task, finish_task],
-                process=Process.sequential, # RAM safety
+                process=Process.sequential,
                 verbose=True
             ).kickoff(inputs=inputs)
 

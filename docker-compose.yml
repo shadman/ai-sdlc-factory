@@ -41,28 +41,10 @@ services:
         limits: { memory: 512M }
 
   # --- STAGE 2: AI FACTORY (On-Demand / Memory Intensive) ---
-  ollama:
-    image: ollama/ollama
-    container_name: ai-brain
-    networks: [ai-factory-net]
-    profiles: ["ai"]
-    volumes: ["./data/ollama:/root/.ollama"]
-    ports: ["11434:11434"]
-    deploy:
-      resources:
-        limits: { memory: 6G }
+  # NOTE: Ollama  -> see ollama/docker-compose.yml   (set OLLAMA_HOST in .env)
+  # NOTE: Phoenix -> see phoenix/docker-compose.yml  (set PHOENIX_ENDPOINT in .env)
 
-  phoenix:
-    image: arizephoenix/phoenix:latest
-    container_name: ai-observability
-    networks: [ai-factory-net]
-    profiles: ["ai"]
-    ports: ["6006:6006"]
-    deploy:
-      resources:
-        limits: { memory: 1G }
-
-  # AI Agent service — needs Ollama + Phoenix
+  # AI Agent service
   agents-api:
     build:
       context: .
@@ -73,9 +55,9 @@ services:
     ports: ["9000:9000"]
     env_file: ./.env
     environment:
-      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_HOST=${OLLAMA_HOST}   # set in .env — local: http://localhost:11434, HF: https://your-space.hf.space
       - REDIS_URL=${REDIS_URL}
-      - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:4317
+      - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_ENDPOINT}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GIT_USER_NAME=${GIT_USER_NAME}
       - GIT_USER_EMAIL=${GIT_USER_EMAIL}
@@ -88,7 +70,6 @@ services:
     volumes:
       - ./backend:/app/repos/backend
       - ./frontend:/app/repos/frontend
-    depends_on: [ollama, phoenix]
     command: ["bash", "-c", "cd /app/ai-agents-core && uvicorn agents_api:app --host 0.0.0.0 --port 9000"]
     deploy:
       resources:

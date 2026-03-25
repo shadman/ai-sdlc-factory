@@ -1,0 +1,21 @@
+services:
+  ollama:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-brain
+    ports:
+      - "11434:11434"
+    env_file: ./.env
+    volumes:
+      - ../data/ollama:/root/.ollama   # model cache shared with main project data dir
+    healthcheck:
+      test: ["CMD", "bash", "-c", "ollama list | grep -q '${OLLAMA_MODEL:-deepseek-coder}'"]
+      interval: 30s
+      timeout: 10s
+      retries: 20        # model pull can take several minutes on first run
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 6G

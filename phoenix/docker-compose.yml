@@ -1,0 +1,12 @@
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: ai-observability
+    ports:
+      - "6006:6006"    # Phoenix UI
+      - "4317:4317"    # OTLP gRPC collector (agents-api sends traces here)
+      - "4318:4318"    # OTLP HTTP collector (alternative)
+    deploy:
+      resources:
+        limits:
+          memory: 1G

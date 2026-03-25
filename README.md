@@ -1,186 +1,299 @@
-# 🏭 Agentic SDLC Factory (Full-Stack)
+# 🏭 Agentic SDLC Factory
 
-This is a localized, AI-driven development environment designed to automate the lifecycle of an E-commerce platform (Angular & Python) using a multi-repo agentic squad.
-
-## 🚀 Overview
-The Agentic SDLC Factory is a headless engineering team powered by DeepSeek-Coder-V2 and CrewAI. It monitors Jira for new tasks, analyzes requirements, implements code, performs security audits, and manages Git operations autonomously.
-
-### Key Capabilities:
-- **Multi-Repo Context:** Processes Full-Stack tickets by coordinating changes across Backend (FastAPI) and Frontend (Angular) repositories.
-- **Self-Healing CI:** Automatically triggers a "Repair Task" if a test failure is detected in the CI/CD pipeline.
-- **Safety Gates:** Integrated security scanning (Bandit/NPM Audit) and a "Human-in-the-loop" approval state via Jira comments.
-- **Observability:** Full execution tracing using Arize Phoenix and real-time state tracking in Redis.
-
-
-## 🏗️ 1. System Architecture & Workflow
-
-The factory operates as a **State Machine** orchestrated by Redis and CrewAI.
-
-### 📊 Operational Flow
-1. **Trigger:** Human moves Jira ticket to **"In Progress"**.
-2. **Analyze:** **Analyst Agent** reads repo-specific `AGENTS.md` and posts a **Confidence Score** + **Plan** to Jira.
-3. **Wait:** Factory enters `awaiting_approval` state in Redis.
-4. **Authorize:** Human comments **"Proceed"** on the ticket.
-5. **Execute:** - **Backend Agent** writes Python logic.
-    - **Frontend Agent** writes Angular components.
-    - **Integrator Agent** ensures API contract synchronization.
-6. **Verify:** **Security Agent** (Bandit/NPM Audit) and **Reviewer Agent** validate the work.
-7. **Document:** **Doc Agent** updates `AGENTS.md` history.
-8. **Finalize:** PR is created and state is marked `completed`.
+An AI-driven, headless engineering team that monitors Jira, analyzes requirements, writes code, runs security audits, creates branches, opens PRs, and manages the full SDLC — autonomously.
 
 ---
 
-## 🛠️ 2. Tech Stack
+## 🏗️ Architecture
+
+The project is split into **four independently deployable services** connected via HTTP and Redis Cloud.
+
+```
+Jira ──POST──▶  listener :8000  ──POST──▶  agents-api :9000  ──▶  Ollama (LLM)
+                    │                           │
+                    └── reads Redis Cloud       └── writes Redis Cloud
+                                                └── calls Jira API
+                                                └── pushes to GitHub
+```
+
+| Service | Directory | Purpose |
+|---|---|---|
+| **Jira Listener** | `listener/` | Receives Jira webhooks, delegates to agents-api |
+| **Agents API** | root + `ai-agents-core/` | Runs all AI agents via CrewAI |
+| **Ollama** | `ollama/` | Serves the LLM locally (no token limits) |
+| **Phoenix** | `phoenix/` | Observability — traces every agent step and LLM call |
+
+---
+
+## 🛠️ Tech Stack
+
 | Component | Technology |
-| :--- | :--- |
-| **LLM Engine** | Ollama (DeepSeek-Coder-V2:Lite) |
-| **Orchestrator** | CrewAI |
-| **State/Memory** | Redis |
-| **Backend** | Python FastAPI + Postgres |
-| **Frontend** | Angular 17+ (Standalone, Tailwind) |
-| **Observability** | Arize Phoenix (Port 6006) |
-| **Web Framework** | FastAPI (Jira Webhook Listener) |
+|---|---|
+| **Agent Orchestration** | CrewAI + LiteLLM |
+| **LLM — Local** | Ollama (DeepSeek-Coder-V2:Lite) |
+| **LLM — Cloud** | Groq / OpenAI (via `LLM_PROVIDER` env var) |
+| **State Store** | Redis Cloud (free tier) |
+| **Observability** | Arize Phoenix |
+| **Webhook Receiver** | FastAPI |
 | **Infrastructure** | Docker Compose |
+| **Version Control** | GitHub CLI (`gh`) |
 
 ---
 
-## 📂 3. Project Structure
+## 📂 Project Structure
+
 ```text
 ai-sdlc-factory/
 │
-├── listener/                  ← deploy this independently
+├── listener/               ← Standalone Jira webhook receiver
 │   ├── jira_listener.py
-│   ├── requirements.txt       (fastapi, uvicorn, redis, requests only)
-│   ├── Dockerfile             (python:3.11-slim, no git/gh/node)
+│   ├── Dockerfile          (python:3.11-slim, minimal deps)
 │   ├── docker-compose.yml
-│   └── .env.sample            (REDIS_URL, AGENTS_API_URL)
+│   ├── requirements.txt
+│   └── .env.sample         (REDIS_URL, AGENTS_API_URL)
 │
-├── ai-agents-core/            ← agents live here
-│   ├── agents_api.py
-│   ├── main.py
+├── ollama/                 ← Standalone LLM server
+│   ├── Dockerfile
+│   ├── init.sh             (auto-pulls model on first start)
+│   ├── docker-compose.yml
+│   └── .env.sample         (OLLAMA_MODEL)
+│
+├── phoenix/                ← Standalone observability server
+│   ├── docker-compose.yml  (uses official arizephoenix/phoenix image)
+│   └── .env.sample
+│
+├── ai-agents-core/         ← Agent logic
+│   ├── agents_api.py       (FastAPI — POST /agents/analyze, /agents/produce)
+│   ├── main.py             (AIFactory + all CrewAI agents)
 │   └── tools/
+│       ├── jira_tools.py
+│       └── shell_tool.py
 │
-├── backend/                   ← backend  repository code, considering master as main branch
-├── frontend/                  ← frontend repository code, considering master as main branch
-│
-├── Dockerfile                 ← agents only, CMD → agents_api on :9000
-├── docker-compose.yml         ← agents only (ollama, phoenix, agents-api, db, backend, frontend)
-└── entrypoint.sh
-
+├── Dockerfile              (agents-api image)
+├── docker-compose.yml      (agents-api + db only — all infra services are external)
+├── entrypoint.sh           (gh auth + repo clone on startup)
+└── .env.sample
 ```
 
-### Environment Configuration
-Create a `.env` file in the root directory by using `.env.sample` file
+---
 
-## 🚀 4. Setup Instructions (16GB RAM Optimized)
-### Step 1: Launch Infrastructure
-Run the app core and the AI factory using Docker profiles.
+## 🔄 State Machine
 
 ```
-# Start E-commerce App
-docker-compose up -d db backend-api frontend-ui
+Jira → "In Progress"
+    └──▶ analyzing
+             └──▶ awaiting_approval   ← plan posted to Jira, waits for human
 
-# Start AI Squad & Brain
-docker-compose --profile ai up -d
+Human comments "proceed"
+    └──▶ branching_{context}          ← git checkout -b feature/ISSUE-KEY
+             └──▶ coding_{context}
+                      └──▶ integrating_{context}
+                               └──▶ security_scanning_{context}
+                                        └──▶ reviewing_{context}   ← commit + push + PR
+                                                 └──▶ completed_{context}
 ```
 
-### Step 2: Initialize the Brain
-Download the specialized coding model into the local Ollama container:
+---
 
+## 🤖 AI Agents
+
+| Agent | Role |
+|---|---|
+| **Analyst** | Reads AGENTS.md, produces technical plan + confidence score |
+| **Backend Developer** | Implements FastAPI + SQLAlchemy changes |
+| **Frontend Developer** | Implements Angular standalone components |
+| **Integration Specialist** | Verifies API contract between backend and frontend |
+| **SecOps** | Runs Bandit (Python) and npm audit (Node) |
+| **Git Manager** | Creates branches, commits, pushes, opens PRs |
+| **Doc Architect** | Updates AGENTS.md history |
+| **Reviewer** | Final quality gate, posts PR link to Jira |
+
+---
+
+## 🚀 Setup
+
+### Prerequisites
+- Docker Desktop
+- Redis Cloud free tier account → [redis.io/try-free](https://redis.io/try-free)
+- Groq API key (if not using local Ollama) → [console.groq.com](https://console.groq.com)
+
+### Step 1 — Configure environment
+
+```bash
+cp .env.sample .env
+# Fill in: REDIS_URL, GITHUB_TOKEN, JIRA_*, GIT_USER_*, OLLAMA_HOST or GROQ_API_KEY
 ```
-docker exec -it ai-brain ollama pull deepseek-coder-v2:lite
+
+### Step 2 — Start Ollama (local LLM, optional)
+
+```bash
+cd ollama && cp .env.sample .env
+docker-compose up -d --build
+# First run downloads deepseek-coder-v2:lite (~9GB) — subsequent starts are instant
 ```
 
+### Step 3 — Start Phoenix (observability, optional)
 
-## 🤖 5. Interacting with the Factory
+```bash
+cd phoenix && docker-compose up -d
+# UI available at http://localhost:6006
+# Set PHOENIX_ENDPOINT=http://localhost:4317 in root .env
+# Leave PHOENIX_ENDPOINT blank to skip tracing (e.g. on Hugging Face)
+```
 
-### The "Confidence Score" Protocol
-When the Analyst posts a report, look for the Confidence Score:
+### Step 4 — Start the AI agents
 
-Score > 85%: Low risk. Safe to "Proceed".
+```bash
+# From project root
+docker-compose --profile ai up -d --build
+```
 
-Score 75% - 85%: Moderate risk. Review the "Technical Plan" carefully before proceeding.
+### Step 5 — Start the Jira listener
 
-Score < 75%: The AI is confused. Do not type "Proceed". Instead, provide more details in the Jira ticket description.
+```bash
+cd listener && cp .env.sample .env
+# Set REDIS_URL and AGENTS_API_URL in listener/.env
+docker-compose up -d --build
+```
 
-### The "AGENTS.md" Law
-Each repo contains an AGENTS.md. This is the Source of Truth for the AI.
+### Step 6 — Configure Jira Webhook
 
-If you want the AI to use a specific library (e.g., ngx-charts), add it to the AGENTS.md of that repo.
+In Jira → **Settings → System → Webhooks**, create a webhook:
+- **URL:** `http://<your-host>:8000/webhook/jira`
+- **Events:** Issue updated, Comment created
 
-If you change the database schema, update the Backend AGENTS.md.
+---
 
-## 📈 6. Monitoring & Troubleshooting
-Real-time Thinking: View agent traces at http://localhost:6006.
+## ☁️ Hugging Face Deployment
 
-Logs: Check container logs: docker logs -f ai-squad.
+Each service deploys as a separate HF Space:
 
-Redis State: Inspect current task state: docker exec -it ai-state redis-cli hgetall task:[YOUR-TICKET-ID].
+| Space | Directory | Port | Notes |
+|---|---|---|---|
+| `your-org/ai-sdlc-listener` | `listener/` | 8000 | Always on |
+| `your-org/ai-sdlc-agents` | root | 9000 | Always on |
+| `your-org/ai-sdlc-ollama` | `ollama/` | 11434 | Optional — use Groq instead |
+| `your-org/ai-sdlc-phoenix` | `phoenix/` | 6006 | Optional — use Arize Cloud instead |
 
+> **Phoenix on HF:** leave `PHOENIX_ENDPOINT` blank to disable tracing, or use [Arize Phoenix Cloud](https://app.phoenix.arize.com) (free) and set `PHOENIX_ENDPOINT=https://app.phoenix.arize.com/v1/traces` + `PHOENIX_API_KEY`.
 
-# The System Architecture
-## Operational Flow Diagram
-This diagram shows how a Jira ticket transforms into verified code.
+**Required HF secrets for agents Space:**
+```
+REDIS_URL          rediss://default:<pwd>@<host>:<port>
+GITHUB_TOKEN       PAT with repo scope
+JIRA_DOMAIN        yourorg.atlassian.net
+JIRA_USERNAME      your@email.com
+JIRA_API_TOKEN     your-jira-token
+GIT_USER_NAME      Your Name
+GIT_USER_EMAIL     your@email.com
+BACKEND_REPO_URL   https://github.com/your-org/backend.git
+FRONTEND_REPO_URL  https://github.com/your-org/frontend.git
+OLLAMA_HOST        https://your-org-ai-sdlc-ollama.hf.space
+LLM_PROVIDER       ollama
+```
+
+> **No Ollama Space?** Use Groq instead: set `LLM_PROVIDER=groq`, `LLM_MODEL=llama-3.3-70b-versatile`, `GROQ_API_KEY=...`
+
+---
+
+## 📈 Monitoring
+
+| Resource | URL |
+|---|---|
+| Phoenix traces | http://localhost:6006 |
+| Ollama API | http://localhost:11434 |
+| Agents API | http://localhost:9000/health |
+| Jira Listener | http://localhost:8000/webhook/jira |
+
+**Container logs:**
+```bash
+docker logs -f agents-api
+docker logs -f jira-listener
+docker logs -f ai-brain
+```
+
+**Redis state inspection:**
+```bash
+# Requires redis-cli pointed at your Redis Cloud instance
+redis-cli -u $REDIS_URL hgetall task:ISSUE-KEY
+```
+
+---
+
+## 🧠 The "Confidence Score" Protocol
+
+The Analyst agent posts a score with every plan:
+
+| Score | Meaning | Action |
+|---|---|---|
+| > 85% | Low risk | Safe to comment `proceed` |
+| 75–85% | Moderate risk | Review the plan carefully first |
+| < 75% | AI is uncertain | Add more detail to the Jira ticket, do NOT proceed |
+
+---
+
+## 📜 The AGENTS.md Law
+
+Each product repo contains an `AGENTS.md`. This is the **source of truth** for the AI agents — it defines libraries, patterns, constraints, and history.
+
+- Want the AI to use `ngx-charts`? Add it to `frontend/AGENTS.md`.
+- Changed the database schema? Update `backend/AGENTS.md`.
+- Every completed task is logged in the AGENTS.md history by the Doc Agent.
+
+---
+
+## 🔧 Useful Commands
+
+```bash
+# Rebuild agents after a code change
+docker-compose --profile ai up -d --build agents-api
+
+# Rebuild listener after a code change
+cd listener && docker-compose up -d --build
+
+# Rebuild Ollama (e.g. to change model)
+cd ollama && docker-compose up -d --build
+
+# Start / stop Phoenix
+cd phoenix && docker-compose up -d
+cd phoenix && docker-compose down
+
+# Stop agents
+docker-compose --profile ai down
+
+# Validate environment before starting
+bash docker-compose.check.sh
+```
+
+---
+
+## 📊 Flow Diagram
 
 ```mermaid
 sequenceDiagram
     participant H as Human (Jira)
-    participant L as FastAPI Listener
-    participant R as Redis (State)
-    participant A as AI Analyst
-    participant D as AI Dev Squad
-    participant G as Gatekeepers (Sec/Review)
+    participant L as Jira Listener :8000
+    participant R as Redis Cloud
+    participant AG as Agents API :9000
+    participant LM as Ollama / Groq
+    participant GH as GitHub
 
-    H->>L: Move Ticket to "In Progress"
-    L->>R: Initialize State (analyzing)
-    L->>A: Trigger Analysis
-    A->>A: Read Repo AGENTS.md
-    A->>H: Post Plan & Confidence Score
-    
-    Note over H,A: Human Review Gap
-    
-    H->>L: Comment "Proceed"
-    L->>R: Update State (authorized)
-    L->>D: Trigger Dev/Integrator
-    D->>D: Write Code (BE/FE)
-    D->>G: Run Security & Peer Review
-    G->>R: Update State (completed)
-    G->>H: Create PR & Post Success
+    H->>L: Move ticket to "In Progress"
+    L->>AG: POST /agents/analyze
+    AG->>R: state = analyzing
+    AG->>LM: Analyst reads AGENTS.md
+    AG->>H: Post plan + confidence score to Jira
+    AG->>R: state = awaiting_approval
+
+    Note over H,R: Human reviews plan
+
+    H->>L: Comment "proceed"
+    L->>R: Read state (awaiting_approval ✅)
+    L->>AG: POST /agents/produce
+    AG->>GH: git checkout -b feature/ISSUE-KEY
+    AG->>LM: Backend / Frontend agents write code
+    AG->>LM: Security scan + Integration check
+    AG->>GH: git push + gh pr create
+    AG->>H: Post PR link to Jira
+    AG->>R: state = completed
 ```
-
-## Next Step for Team: 
-- Ensure your Jira Webhooks are pointing to http://[YOUR-IP]:8000/webhook/jira
-
-- Create a **JIRA** account and configure a **Webhook** inside.
-
-- Generate a **GitHub Actions workflow** to automate the final deployment once the Reviewer Agent approves the PR.
-
-- To avoid tracking git changes from `backend` and `frontend` directories: 
-
-`git rm -r --cached backend/`
-`git rm -r --cached frontend/`
-
-
-## Important Commands: 
-
-# Start E-commerce App
-`docker-compose up -d db backend-api frontend-ui`
-
-# Start AI Squad & Brain
-`docker-compose --profile ai up -d`
-
-# Initialize the Brain
-`docker exec -it ai-brain ollama pull deepseek-coder-v2:lite`
-
-# If you change something
-`docker-compose up -d --build ai-squad`
-
-
-# Phoenix 
-http://localhost:6006/
-
-# Ollama
-http://localhost:11434/
-
-# Jira Listener
-http://localhost:8000/webhook/jira
