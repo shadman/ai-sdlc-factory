@@ -66,6 +66,9 @@ services:
       - JIRA_API_TOKEN=${JIRA_API_TOKEN}
       - BACKEND_REPO_URL=${BACKEND_REPO_URL}
       - FRONTEND_REPO_URL=${FRONTEND_REPO_URL}
+      - CREWAI_TRACING_ENABLED=false
+      - OTEL_SDK_DISABLED=true
+      - CREWAI_STORAGE_DIR=/tmp/crewai
     # Volumes for local dev only — on Hugging Face, entrypoint.sh clones the repos instead
     volumes:
       - ./backend:/app/repos/backend

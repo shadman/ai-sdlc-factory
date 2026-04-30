@@ -1,5 +1,15 @@
 import os
+import re
 import json
+import time
+import logging
+
+# Disable CrewAI's interactive tracing prompt and telemetry — required for server/HF deployment
+os.environ["CREWAI_TRACING_ENABLED"] = "false"
+os.environ["OTEL_SDK_DISABLED"] = "true"
+# Give CrewAI a writable storage dir — avoids portalocker file-lock errors in containers
+os.environ.setdefault("CREWAI_STORAGE_DIR", "/tmp/crewai")
+
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai_tools import FileReadTool
 from redis import Redis
@@ -21,7 +31,8 @@ REDIS_URL      = os.getenv("REDIS_URL")  # e.g. rediss://default:<pwd>@host:port
 if REDIS_URL:
     redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
 else:
-    redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
+    redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
+                         decode_responses=True, ssl=True)
 
 # 3. Phoenix Instrumentation (optional — skipped gracefully if endpoint not set or unreachable)
 if PHOENIX_ENDPOINT:
@@ -51,8 +62,48 @@ else:
 if LLM_PROVIDER == "ollama":
     local_llm = LLM(model=f"ollama/{LLM_MODEL}", base_url=OLLAMA_HOST, timeout=300)
 else:
-    # LiteLLM picks up API keys from env automatically (GROQ_API_KEY, OPENAI_API_KEY, etc.)
-    local_llm = LLM(model=f"{LLM_PROVIDER}/{LLM_MODEL}", timeout=300)
+    # LiteLLM picks up API keys from env automatically (GROQ_API_KEY, GEMINI_API_KEY, etc.)
+    # max_retries + rpm handle free-tier rate limits (e.g. Gemini 15 RPM)
+    local_llm = LLM(
+        model=f"{LLM_PROVIDER}/{LLM_MODEL}",
+        timeout=300,
+        max_retries=10,          # retry on 429s automatically
+        rpm=4,                   # conservative throttle — well under Gemini's 20 RPM free tier
+    )
+
+logger = logging.getLogger("ai_factory")
+
+# --- RETRY HELPER ---
+def _parse_retry_after(err_str):
+    """Extract the server-suggested retry delay from the error message."""
+    match = re.search(r'retry in (\d+(?:\.\d+)?)\s*s', err_str, re.IGNORECASE)
+    if match:
+        return int(float(match.group(1))) + 5  # add 5s safety buffer
+    return None
+
+def run_crew_with_retry(crew, inputs, max_retries=8, base_wait=30):
+    """
+    Runs crew.kickoff() with smart retry on rate limit (429) errors.
+    Uses the server's suggested retry delay when available, otherwise
+    exponential backoff capped at 60s.
+    """
+    for attempt in range(max_retries):
+        try:
+            return crew.kickoff(inputs=inputs)
+        except Exception as e:
+            err = str(e)
+            is_rate_limit = any(x in err for x in [
+                "429", "RESOURCE_EXHAUSTED", "rate limit",
+                "rate_limit", "quota", "RateLimitError"
+            ])
+            if is_rate_limit and attempt < max_retries - 1:
+                # Prefer the server's suggested wait, cap backoff at 60s
+                wait = _parse_retry_after(err) or min(base_wait * (2 ** attempt), 60)
+                logger.warning(f"⏳ Rate limit — attempt {attempt + 1}/{max_retries}. Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise  # re-raise non-rate-limit errors immediately
+    raise RuntimeError(f"Crew failed after {max_retries} retries due to rate limiting.")
 
 # 5. Jira tool to handle comments
 jira_comment_tool = JiraCommentTool()
@@ -66,7 +117,11 @@ shell_tool = ShellExecutionTool()
 analyst_agent = Agent(
     role='Lead SDLC Analyst',
     goal='Analyze Jira tickets and codebase to provide a confidence score and technical plan.',
-    backstory="Expert architect. You read repo-specific AGENTS.md files to ensure constraints are met.",
+    backstory="""Expert architect. Product repositories are located under /app/repos/.
+    ALWAYS use full absolute paths when reading files.
+    For example: /app/repos/backend/AGENTS.md, /app/repos/frontend/AGENTS.md.
+    Never use relative paths like 'backend/AGENTS.md'.
+    Create a new branch for every change and its pull request, you can not push into the main/master branch directly without approval.""",
     tools=[file_tool, jira_comment_tool],
     llm=local_llm,
     verbose=True
@@ -124,9 +179,9 @@ git_agent = Agent(
     backstory="""You manage version control for product repos. You are a multi-repo Git Master.
     BEFORE performing ANY git operations, verify your current working directory 
     matches the Orchestrator's target path. Only execute git commands within the product repository directory.
-    Before pushing, you MUST set git config user.email and user.name.
+    Before pushing a newly created branch, you MUST set git config user.email and user.name.
     You use the GITHUB_TOKEN to authenticate. You always create branches named feature/ISSUE-KEY from master branch.
-    You navigate to the repo folder and use git remote set-url origin to inject the GITHUB_TOKEN before pushing, ensuring a headless environment can authenticate.""",
+    You navigate to the repo folder and use git remote set-url origin to inject the GITHUB_TOKEN before pushing, ensuring a headless environment can authenticate. Create a proper PR for final review by human""",
     tools=[shell_tool],
     llm=local_llm,
     verbose=True
@@ -145,9 +200,8 @@ reviewer_agent = Agent(
     role='Senior Staff Engineer',
     goal='Final peer review and PR approval.',
     backstory="""You are the final human-like quality check. 
-    If a security scan or integration fails, you check the Phoenix trace logs 
-    at http://phoenix:6006 to identify the exact step where logic deviated.""",
-    tools=[file_tool, jira_comment_tool], 
+    If a security scan or integration fails, you check the Phoenix trace logs to identify the exact step where logic deviated.""",
+    tools=[file_tool, jira_comment_tool, shell_tool], 
     llm=local_llm,
     verbose=True
 )
@@ -173,16 +227,28 @@ class AIFactory:
         repos_str = ", ".join(self.repo_contexts)
 
         """Phase 1: ANALYZING -> AWAITING_APPROVAL"""
+        # Build explicit file paths for all repo contexts
+        repo_paths = ", ".join([f"/app/repos/{ctx}" for ctx in self.repo_contexts])
+        agents_md_paths = " and ".join([f"/app/repos/{ctx}/AGENTS.md" for ctx in self.repo_contexts])
+
         task = Task(
-            description=f"""Analyze {self.issue_key} for these repositories: {repos_str}.
-            Summary: {self.summary}. 
-            1. Create a Technical Plan and Calculate Score that covers all affected repos.
-            2. Use JiraCommentTool to post the plan and score as a comment on {self.issue_key}.""",
-            expected_output="A multi-repo Technical Plan with a Confidence Score post to Jira ticket.",
+            description=f"""Analyze Jira ticket {self.issue_key} for these repositories: {repos_str}.
+            Summary: {self.summary}.
+
+            Repository files are located at: {repo_paths}
+            IMPORTANT: Use these EXACT absolute paths when reading files:
+            - AGENTS.md: {agents_md_paths}
+            - README.md: replace AGENTS.md with README.md in the paths above
+
+            Steps:
+            1. Read each AGENTS.md file using its full absolute path to understand constraints.
+            2. Create a Technical Plan and Confidence Score covering all affected repos.
+            3. Use JiraCommentTool to post the plan and score as a comment on {self.issue_key}.""",
+            expected_output="A multi-repo Technical Plan with a Confidence Score posted to the Jira ticket.",
             agent=analyst_agent
         )
-        crew = Crew(agents=[analyst_agent], tasks=[task], verbose=True)
-        result = crew.kickoff(inputs=inputs)
+        crew = Crew(agents=[analyst_agent], tasks=[task], verbose=True, memory=False, cache=False)
+        result = run_crew_with_retry(crew, inputs)
         
         redis_client.hset(f"task:{self.issue_key}", "plan", str(result))
         self.set_state("awaiting_approval")
@@ -208,7 +274,7 @@ class AIFactory:
                 expected_output=f"Branch {branch_name} created and checked out in {working_dir}.",
                 agent=git_agent
             )
-            Crew(agents=[git_agent], tasks=[branch_task], verbose=True).kickoff(inputs=inputs)
+            run_crew_with_retry(Crew(agents=[git_agent], tasks=[branch_task], verbose=True, memory=False, cache=False), inputs)
 
             # 1. CODING (now on feature branch)
             self.set_state(f"coding_{context}")
@@ -220,14 +286,14 @@ class AIFactory:
                 agent=active_dev
             )
             try:
-                Crew(agents=[active_dev], tasks=[dev_task], verbose=True).kickoff(inputs=inputs)
+                run_crew_with_retry(Crew(agents=[active_dev], tasks=[dev_task], verbose=True, memory=False, cache=False), inputs)
             except Exception as e:
                 repair_task = Task(
                     description=f"Fix the error that occurred: {str(e)} in {working_dir}",
                     agent=active_dev,
                     expected_output="Repaired code."
                 )
-                Crew(agents=[active_dev], tasks=[repair_task], verbose=True).kickoff(inputs=inputs)
+                run_crew_with_retry(Crew(agents=[active_dev], tasks=[repair_task], verbose=True, memory=False, cache=False), inputs)
 
             # 2. INTEGRATING
             self.set_state(f"integrating_{context}")
@@ -236,7 +302,7 @@ class AIFactory:
                 expected_output="Verification report.",
                 agent=integrator_agent
             )
-            Crew(agents=[integrator_agent], tasks=[int_task], verbose=True).kickoff(inputs=inputs)
+            run_crew_with_retry(Crew(agents=[integrator_agent], tasks=[int_task], verbose=True, memory=False, cache=False), inputs)
 
             # 3. SECURITY SCANNING
             self.set_state(f"security_scanning_{context}")
@@ -246,7 +312,7 @@ class AIFactory:
                 expected_output="Security scan report.",
                 agent=security_agent
             )
-            Crew(agents=[security_agent], tasks=[sec_task], verbose=True).kickoff(inputs=inputs)
+            run_crew_with_retry(Crew(agents=[security_agent], tasks=[sec_task], verbose=True, memory=False, cache=False), inputs)
 
             # 4. REVIEWING — commit, push, open PR, update docs
             self.set_state(f"reviewing_{context}")
@@ -282,12 +348,17 @@ class AIFactory:
                 agent=reviewer_agent
             )
 
-            Crew(
-                agents=[doc_agent, git_agent, reviewer_agent],
-                tasks=[doc_task, git_task, rev_task, finish_task],
-                process=Process.sequential,
-                verbose=True
-            ).kickoff(inputs=inputs)
+            run_crew_with_retry(
+                Crew(
+                    agents=[doc_agent, git_agent, reviewer_agent],
+                    tasks=[doc_task, git_task, rev_task, finish_task],
+                    process=Process.sequential,
+                    verbose=True,
+                    memory=False,
+                    cache=False
+                ),
+                inputs
+            )
 
             # 5. COMPLETED
             self.set_state(f"completed_{context}")

@@ -18,6 +18,8 @@ if [ ! -d "$BACKEND_DIR/.git" ]; then
     echo "📦 Backend repo not found — cloning from $BACKEND_REPO ..."
     rm -rf "$BACKEND_DIR"
     git clone "$BACKEND_REPO" "$BACKEND_DIR"
+    ls "$BACKEND_DIR"
+    git branch
     echo "✅ Backend cloned."
 else
     echo "✅ Backend repo already present — skipping clone."
@@ -27,6 +29,8 @@ if [ ! -d "$FRONTEND_DIR/.git" ]; then
     echo "📦 Frontend repo not found — cloning from $FRONTEND_REPO ..."
     rm -rf "$FRONTEND_DIR"
     git clone "$FRONTEND_REPO" "$FRONTEND_DIR"
+    ls "$FRONTEND_DIR"
+    git branch
     echo "✅ Frontend cloned."
 else
     echo "✅ Frontend repo already present — skipping clone."

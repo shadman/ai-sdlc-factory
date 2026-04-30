@@ -18,7 +18,8 @@ logger = logging.getLogger("jira_listener")
 if REDIS_URL:
     redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
 else:
-    redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
+    redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
+                         decode_responses=True, ssl=True)
 
 app = FastAPI()
 
